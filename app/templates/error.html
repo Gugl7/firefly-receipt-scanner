@@ -7,7 +7,30 @@
 <div class="error">
     <p>{{ error_message }}</p>
 </div>
+
+{% if batch_id and current_index + 1 < batch_total %}
+<form action="/create-transaction" method="post" class="form-group">
+    <input type="hidden" name="action" value="skip">
+    <input type="hidden" name="date" value="2000-01-01">
+    <input type="hidden" name="amount" value="0">
+    <input type="hidden" name="store_name" value="skip">
+    <input type="hidden" name="description" value="skip">
+    <input type="hidden" name="category" value="">
+    <input type="hidden" name="budget" value="">
+    <input type="hidden" name="source_account" value="{{ source_account or '' }}">
+    <input type="hidden" name="batch_id" value="{{ batch_id }}">
+    <input type="hidden" name="current_index" value="{{ current_index }}">
+    <input type="hidden" name="batch_total" value="{{ batch_total }}">
+    <input type="hidden" name="created_count" value="{{ created_count or 0 }}">
+    
+    <div class="btn-group">
+        <button type="submit" class="btn btn-warning">Skip and Continue to Next Receipt ({{ current_index + 2 }}/{{ batch_total }})</button>
+        <a href="/?cancel_batch={{ batch_id }}" class="btn btn-secondary">Cancel Batch</a>
+    </div>
+</form>
+{% else %}
 <div class="form-group">
-    <a href="/" class="btn">Return to Upload</a>
+    <a href="{% if batch_id %}/?cancel_batch={{ batch_id }}{% else %}/{% endif %}" class="btn">Return to Upload</a>
 </div>
+{% endif %}
 {% endblock %} 

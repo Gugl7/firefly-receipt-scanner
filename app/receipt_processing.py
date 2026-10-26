@@ -224,10 +224,15 @@ async def _extract_with_router(
     return parse_receipt_json(content)
 
 
-async def extract_receipt_data(file: UploadFile):
+async def extract_receipt_data(
+    file: UploadFile | bytes, filename: str | None = None
+):
     """Extract data from the receipt image without creating a transaction."""
     try:
-        print(f"Processing image: {file.filename}")
+        fname = filename or (
+            file.filename if isinstance(file, UploadFile) else "receipt.jpg"
+        )
+        print(f"Processing image: {fname}")
 
         # Process the image (resize and compress with more aggressive settings)
         image, image_bytes = await process_image(file, max_size=(768, 768))

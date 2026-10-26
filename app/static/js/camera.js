@@ -4,7 +4,7 @@ const canvas = document.getElementById('canvas');
 const startButton = document.getElementById('startCamera');
 const captureButton = document.getElementById('capture');
 const retakeButton = document.getElementById('retake');
-const fileInput = document.getElementById('file');
+const fileInput = document.getElementById('files') || document.getElementById('file');
 const form = document.getElementById('receipt-form');
 
 if (startButton) {

@@ -27,15 +27,17 @@
     <div class="or-divider"><span>OR</span></div>
 
     <div class="form-group">
-        <label for="file">Upload Receipt:</label>
-        <input type="file" id="file" name="file" accept="image/*" capture="environment">
+        <label for="files">Upload Receipt(s):</label>
+        <input type="file" id="files" name="files" accept="image/*" multiple required onchange="updateFileCount(this)">
+        <small class="helper-text">You can select one or multiple receipts at once.</small>
+        <div id="file-count-badge" class="file-count-badge" style="display: none;"></div>
     </div>
 
     <button type="submit" id="submit-btn" class="btn">Extract Receipt Data</button>
 </form>
 
 <div id="loading" class="loading">
-    <p>Processing receipt... This may take a minute. Please don't close this page.</p>
+    <p id="loading-text">Processing receipt... This may take a minute. Please don't close this page.</p>
     <p>If this takes too long, you can try again with a smaller or clearer image.</p>
 </div>
 
@@ -48,7 +50,31 @@
 
 {% block extra_scripts %}
 <script>
+    function updateFileCount(input) {
+        const badge = document.getElementById('file-count-badge');
+        const btn = document.getElementById('submit-btn');
+        const count = input.files ? input.files.length : 0;
+        if (count > 1) {
+            badge.textContent = `📁 ${count} receipts selected`;
+            badge.style.display = 'block';
+            btn.textContent = `Extract Receipt Data (${count})`;
+        } else if (count === 1) {
+            badge.textContent = `📁 1 receipt selected`;
+            badge.style.display = 'block';
+            btn.textContent = 'Extract Receipt Data';
+        } else {
+            badge.style.display = 'none';
+            btn.textContent = 'Extract Receipt Data';
+        }
+    }
+
     function showLoading() {
+        const input = document.getElementById('files');
+        const count = input && input.files ? input.files.length : 1;
+        const msg = document.getElementById('loading-text');
+        if (msg && count > 1) {
+            msg.textContent = `Processing receipt 1 of ${count}... This may take a minute. Please don't close this page.`;
+        }
         document.getElementById('loading').classList.add('active');
         document.getElementById('submit-btn').disabled = true;
     }

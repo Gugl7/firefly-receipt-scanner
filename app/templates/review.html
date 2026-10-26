@@ -3,10 +3,23 @@
 {% block title %}Review Receipt Data{% endblock %}
 
 {% block content %}
-<h1>Review Receipt Data</h1>
-<p>Please review and edit the extracted data before creating the transaction.</p>
+{% if batch_total and batch_total > 1 %}
+<div class="batch-progress">
+    <span>Receipt {{ current_index + 1 }} of {{ batch_total }}</span>
+    <span>{{ created_count }} created</span>
+</div>
+{% endif %}
 
-<form action="/create-transaction" method="post" onsubmit="showLoading()">
+<h1>Review Receipt Data</h1>
+<p class="subtitle">Please review and edit the extracted data before creating the transaction.</p>
+
+{% if extracted_data.image_base64 %}
+<div class="receipt-preview-container">
+    <img src="data:image/jpeg;base64,{{ extracted_data.image_base64 }}" alt="Receipt preview" class="receipt-preview-img">
+</div>
+{% endif %}
+
+<form id="review-form" action="/create-transaction" method="post" onsubmit="showLoading()">
     <div class="form-group">
         <label for="date">Date:</label>
         <input type="date" id="date" name="date" value="{{ extracted_data.date }}" required>
@@ -44,9 +57,22 @@
             {% endfor %}
         </select>
     </div>
+
+    <div class="form-group">
+        <label for="source_account">Source Account:</label>
+        <select id="source_account" name="source_account" required>
+            {% for account in asset_accounts %}
+            <option value="{{ account }}" {% if account == extracted_data.source_account %}selected{% endif %}>{{ account }}</option>
+            {% endfor %}
+        </select>
+    </div>
     
-    <input type="hidden" name="source_account" value="{{ extracted_data.source_account }}">
     <input type="hidden" name="image_base64" value="{{ extracted_data.image_base64 }}">
+    <input type="hidden" name="batch_id" value="{{ batch_id or '' }}">
+    <input type="hidden" name="current_index" value="{{ current_index or 0 }}">
+    <input type="hidden" name="batch_total" value="{{ batch_total or 1 }}">
+    <input type="hidden" name="created_count" value="{{ created_count or 0 }}">
+    <input type="hidden" name="action" id="form-action" value="create">
 
     <div class="form-group checkbox-group">
         <label class="checkbox-label">
@@ -56,23 +82,48 @@
         <input type="hidden" name="attach_receipt" id="attach_receipt_value" value="on">
     </div>
 
-    <div class="form-group">
-        <button type="submit" id="submit-btn" class="btn">Create Transaction</button>
-        <button type="button" class="btn btn-secondary" onclick="window.location.href='/'">Cancel</button>
+    <div class="form-group btn-group">
+        {% if batch_total and batch_total > 1 and current_index + 1 < batch_total %}
+            <button type="submit" id="submit-btn" class="btn">Create & Next ({{ current_index + 1 }}/{{ batch_total }})</button>
+            <button type="button" class="btn btn-warning" onclick="skipCurrent()">Skip</button>
+            <a href="{% if batch_id %}/?cancel_batch={{ batch_id }}{% else %}/{% endif %}" class="btn btn-secondary">Cancel Batch</a>
+        {% else %}
+            <button type="submit" id="submit-btn" class="btn">Create Transaction</button>
+            <a href="{% if batch_id %}/?cancel_batch={{ batch_id }}{% else %}/{% endif %}" class="btn btn-secondary">Cancel</a>
+        {% endif %}
     </div>
 </form>
 
 <div id="loading" class="loading">
-    <p>Creating transaction... This may take a minute. Please don't close this page.</p>
-    <p>If this takes too long, you can try again later.</p>
+    <p id="loading-msg">
+        {% if batch_total and batch_total > 1 and current_index + 1 < batch_total %}
+            Creating transaction and processing receipt {{ current_index + 2 }} of {{ batch_total }}...
+        {% else %}
+            Creating transaction... This may take a minute. Please don't close this page.
+        {% endif %}
+    </p>
+    <p>Please don't close this page.</p>
 </div>
 {% endblock %}
 
 {% block extra_scripts %}
 <script>
-    function showLoading() {
+    function showLoading(customMsg) {
+        if (customMsg) {
+            document.getElementById('loading-msg').textContent = customMsg;
+        }
         document.getElementById('loading').classList.add('active');
         document.getElementById('submit-btn').disabled = true;
+    }
+
+    function skipCurrent() {
+        if (confirm('Skip this receipt and move to the next one?')) {
+            document.getElementById('form-action').value = 'skip';
+            const form = document.getElementById('review-form');
+            form.noValidate = true;
+            showLoading('Skipping receipt and loading next...');
+            form.submit();
+        }
     }
 
     document.getElementById('attach_receipt_checkbox').addEventListener('change', function() {

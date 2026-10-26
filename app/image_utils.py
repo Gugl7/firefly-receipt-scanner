@@ -4,20 +4,22 @@ from fastapi import UploadFile
 from PIL import Image
 
 
-async def process_image(file: UploadFile, max_size=(768, 768)):
+async def process_image(file: UploadFile | bytes, max_size=(768, 768)):
     """
     Process an uploaded image by resizing it to the specified dimensions and compressing it.
 
     Args:
-        file: The uploaded file
+        file: The uploaded file or raw image bytes
         max_size: Maximum dimensions (width, height) for the resized image
-        quality: JPEG quality (1-100) for compression
 
     Returns:
         A tuple containing (PIL.Image, resized_jpeg_bytes)
     """
-    # Read the uploaded file
-    contents = await file.read()
+    # Read the uploaded file or use bytes directly
+    if isinstance(file, bytes):
+        contents = file
+    else:
+        contents = await file.read()
 
     # Open the image using PIL
     img = Image.open(io.BytesIO(contents))
