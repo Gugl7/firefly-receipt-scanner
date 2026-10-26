@@ -1,12 +1,14 @@
 import base64
+import re
 import time
 from datetime import datetime
 from functools import lru_cache
 
 from fastapi import UploadFile
 from google import genai
+import httpx
 
-from .config import get_settings
+from .config import Settings, get_settings
 from .firefly import (
     attach_image_to_transaction,
     create_firefly_transaction,
@@ -20,7 +22,123 @@ from .models import ReceiptModel
 @lru_cache
 def get_gemini_client() -> genai.Client:
     settings = get_settings()
-    return genai.Client(api_key=settings.google_ai_api_key)
+    http_options = {}
+    if settings.gemini_base_url:
+        http_options["base_url"] = settings.gemini_base_url
+    return genai.Client(
+        api_key=settings.google_ai_api_key or "dummy",
+        http_options=http_options or None,
+    )
+
+
+def extract_json_str(text: str) -> str:
+    """Extract JSON object substring from raw model output."""
+    text = text.strip()
+    if text.startswith("```"):
+        lines = text.splitlines()
+        if lines[0].startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].startswith("```"):
+            lines = lines[:-1]
+        text = "\n".join(lines).strip()
+    start = text.find("{")
+    end = text.rfind("}")
+    if start != -1 and end != -1 and end >= start:
+        return text[start : end + 1]
+    return text
+
+
+def parse_receipt_json(content: str) -> ReceiptModel:
+    json_str = extract_json_str(content)
+    return ReceiptModel.model_validate_json(json_str)
+
+
+def normalize_date(date_str: str) -> str:
+    date_str = date_str.strip()
+    formats = [
+        "%Y-%m-%d",
+        "%d/%m/%Y",
+        "%m/%d/%Y",
+        "%d.%m.%Y",
+        "%Y/%m/%d",
+        "%d-%m-%Y",
+    ]
+    for fmt in formats:
+        try:
+            return datetime.strptime(date_str, fmt).strftime("%Y-%m-%d")
+        except ValueError:
+            continue
+    print(f"Invalid date format: {date_str}. Using current date instead.")
+    return datetime.now().strftime("%Y-%m-%d")
+
+
+async def _extract_with_router(
+    prompt: str, image_base64: str, settings: Settings
+) -> ReceiptModel:
+    headers = {
+        "Content-Type": "application/json",
+    }
+    if settings.router_api_key:
+        headers["Authorization"] = f"Bearer {settings.router_api_key}"
+
+    payload = {
+        "model": settings.effective_router_model,
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": prompt,
+                    },
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": f"data:image/jpeg;base64,{image_base64}",
+                        },
+                    },
+                ],
+            }
+        ],
+        "response_format": {"type": "json_object"},
+    }
+
+    url = settings.router_chat_url
+    print(
+        f"Sending request to 9router at {url} (model: {settings.effective_router_model})..."
+    )
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        try:
+            response = await client.post(url, headers=headers, json=payload)
+            response.raise_for_status()
+            data = response.json()
+        except httpx.HTTPStatusError as e:
+            if (
+                e.response.status_code == 400
+                and "response_format" in e.response.text.lower()
+            ):
+                print(
+                    "response_format not supported by provider, retrying without it..."
+                )
+                payload.pop("response_format", None)
+                response = await client.post(url, headers=headers, json=payload)
+                response.raise_for_status()
+                data = response.json()
+            else:
+                print(f"9router HTTP error: {e.response.status_code} {e.response.text}")
+                raise
+        except httpx.TimeoutException as e:
+            raise TimeoutError(
+                "The 9router request timed out. Please try again with a smaller or clearer image."
+            ) from e
+
+    choices = data.get("choices", [])
+    if not choices or "message" not in choices[0]:
+        raise ValueError(f"Invalid response format from 9router: {data}")
+
+    content = choices[0]["message"].get("content", "")
+    print("Received response from 9router")
+    return parse_receipt_json(content)
 
 
 async def extract_receipt_data(file: UploadFile):
@@ -30,6 +148,7 @@ async def extract_receipt_data(file: UploadFile):
 
         # Process the image (resize and compress with more aggressive settings)
         image, image_bytes = await process_image(file, max_size=(768, 768))
+        image_base64 = base64.b64encode(image_bytes).decode("utf-8")
         print("Image processed and encoded to base64")
 
         # Fetch dynamic data from Firefly III
@@ -58,73 +177,82 @@ async def extract_receipt_data(file: UploadFile):
 
         # Construct the prompt.
         receipt_prompt = (
-            "Please analyze the attached receipt image and extract the following details: "
-            "1) receipt amount, 2) receipt category (choose from: "
+            "Please analyze the attached receipt image and extract the following details:\n"
+            "1) amount (receipt total amount as a number)\n"
+            "2) category (choose the best matching category from: "
             + ", ".join(categories)
-            + "), "
-            "3) receipt budget (choose from: " + ", ".join(budgets) + "), "
-            "4) destination account (store name) "
-            "5) description of the transaction"
-            "5) date (in YYYY-MM-DD format). Today's date is "
+            + ")\n"
+            "3) budget (choose the best matching budget from: "
+            + ", ".join(budgets)
+            + ")\n"
+            "4) store_name (destination account / store or merchant name)\n"
+            "5) description (brief description of the transaction)\n"
+            "6) date (in YYYY-MM-DD format). Today's date is "
             + datetime.now().strftime("%Y-%m-%d")
-            + ". "
-            "Most receipts are from the past few days, so use today's date as a reference point when interpreting dates. "
-            "If the date is not on the receipt, use today's date as the default."
+            + ".\n"
+            "Most receipts are from the past few days, so use today's date as a reference point when interpreting dates.\n"
+            "If the date is not on the receipt, use today's date as the default.\n\n"
+            "Return ONLY a valid JSON object matching this schema:\n"
+            "{\n"
+            '  "date": "YYYY-MM-DD",\n'
+            '  "amount": 0.0,\n'
+            '  "store_name": "string",\n'
+            '  "description": "string",\n'
+            '  "category": "string",\n'
+            '  "budget": "string"\n'
+            "}"
         )
 
-        # Set a shorter timeout for the API call
-        try:
-            print("Sending request to Gemini for analysis...")
-            # Generate receipt details using genai with a shorter timeout
-            settings = get_settings()
-            client = get_gemini_client()
-            gemini_response = client.models.generate_content(
-                model=settings.gemini_model,
-                contents=[
-                    receipt_prompt,
-                    image,
-                ],
-                config={
-                    "response_mime_type": "application/json",
-                    "response_schema": ReceiptModel,
-                },
+        settings = get_settings()
+
+        if settings.effective_llm_provider == "9router":
+            receipt = await _extract_with_router(
+                receipt_prompt, image_base64, settings
             )
-            print("Received response from Gemini")
-        except Exception as e:
-            print(f"Error during Gemini analysis: {str(e)}")
-            print(f"Error type: {type(e)}")
-            if "timeout" in str(e).lower():
-                raise TimeoutError(
-                    "The image processing timed out. Please try again with a smaller or clearer image."
+        else:
+            if not settings.google_ai_api_key:
+                raise ValueError(
+                    "GOOGLE_AI_API_KEY is not set. Please set GOOGLE_AI_API_KEY in your .env or configure ROUTER_BASE_URL to use 9router."
                 )
-            raise e
+            try:
+                print("Sending request to Gemini for analysis...")
+                client = get_gemini_client()
+                gemini_response = client.models.generate_content(
+                    model=settings.gemini_model,
+                    contents=[
+                        receipt_prompt,
+                        image,
+                    ],
+                    config={
+                        "response_mime_type": "application/json",
+                        "response_schema": ReceiptModel,
+                    },
+                )
+                print("Received response from Gemini")
+                receipt = gemini_response.parsed
+            except Exception as e:
+                print(f"Error during Gemini analysis: {str(e)}")
+                print(f"Error type: {type(e)}")
+                if "timeout" in str(e).lower():
+                    raise TimeoutError(
+                        "The image processing timed out. Please try again with a smaller or clearer image."
+                    )
+                raise e
 
         # Validate and format the date
-        try:
-            print(f"Validating date: {gemini_response.parsed.date}")
-            # Try to parse the date to ensure it's valid
-            date_obj = datetime.strptime(gemini_response.parsed.date, "%Y-%m-%d")
-            # Format it back to the expected format
-            gemini_response.parsed.date = date_obj.strftime("%Y-%m-%d")
-            print("Date validation successful")
-        except ValueError:
-            # If the date is invalid, use the current date
-            print(
-                f"Invalid date format: {gemini_response.parsed.date}. Using current date instead."
-            )
-            gemini_response.parsed.date = datetime.now().strftime("%Y-%m-%d")
+        receipt.date = normalize_date(receipt.date)
 
         # Return the extracted data as a dictionary
         extracted_data = {
-            "date": gemini_response.parsed.date,
-            "amount": gemini_response.parsed.amount,
-            "store_name": gemini_response.parsed.store_name,
-            "description": gemini_response.parsed.description,
-            "category": gemini_response.parsed.category,
-            "budget": gemini_response.parsed.budget,
+            "date": receipt.date,
+            "amount": receipt.amount,
+            "store_name": receipt.store_name,
+            "description": receipt.description,
+            "category": receipt.category,
+            "budget": receipt.budget,
             "available_categories": categories,
             "available_budgets": budgets,
-            "image_base64": base64.b64encode(image_bytes).decode("utf-8"),
+            "image_base64": image_base64,
         }
         print("Successfully extracted all data")
         return extracted_data

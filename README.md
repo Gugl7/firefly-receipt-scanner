@@ -11,7 +11,7 @@ https://github.com/user-attachments/assets/ec41d8dc-71e9-4aa4-b65c-869c3dd54845
 
 ## Features
 
-- Upload and scan receipts using Google's Gemini AI
+- Upload and scan receipts using AI (supports 9Router / OpenAI-compatible routers or direct Google Gemini)
 - Extract key information: date, amount, store name, category, and budget
 - Review and edit extracted data before creating transactions
 - Create transactions in Firefly III with a single click
@@ -22,7 +22,7 @@ https://github.com/user-attachments/assets/ec41d8dc-71e9-4aa4-b65c-869c3dd54845
 
 - Docker and Docker Compose
 - A Firefly III instance
-- A Google AI API key
+- A 9Router instance (or OpenAI-compatible router) OR a Google AI API key
 
 ## Configuration
 
@@ -38,12 +38,30 @@ https://github.com/user-attachments/assets/ec41d8dc-71e9-4aa4-b65c-869c3dd54845
    ```
 
 3. Edit the `.env` file with your configuration:
+
+   **Option A: Using 9Router (Recommended)**
+   ```env
+   # Firefly III API Configuration
+   FIREFLY_III_URL=https://your-firefly-iii-instance.com
+   FIREFLY_III_TOKEN=your-personal-access-token
+
+   # 9Router Configuration
+   # If running receipt-scanner in Docker and 9router on host machine:
+   ROUTER_BASE_URL=http://host.docker.internal:20128/v1
+   # If running receipt-scanner locally:
+   # ROUTER_BASE_URL=http://localhost:20128/v1
+   ROUTER_API_KEY=your-9router-api-key
+   ROUTER_MODEL=gemini-2.5-flash
    ```
+
+   **Option B: Using Direct Google Gemini AI**
+   ```env
    # Firefly III API Configuration
    FIREFLY_III_URL=https://your-firefly-iii-instance.com
    FIREFLY_III_TOKEN=your-personal-access-token
 
    # Google AI API Configuration
+   LLM_PROVIDER=gemini
    GOOGLE_AI_API_KEY=your-google-ai-api-key
    GEMINI_MODEL=gemini-2.5-flash
    ```

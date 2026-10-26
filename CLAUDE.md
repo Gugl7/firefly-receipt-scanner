@@ -33,18 +33,24 @@ User → FastAPI (app.py) → Google Gemini AI (receipt_processing.py)
 
 ### Key Modules
 - **app.py** — FastAPI routes, middleware (ProxyHeaders, TrustedHost), static file mounting, startup validation of Firefly III connection
-- **receipt_processing.py** — Gemini AI integration (model configurable via `GEMINI_MODEL`, defaults to `gemini-2.5-flash`), dynamic prompt construction with Firefly categories/budgets, structured JSON response via `ReceiptModel` schema
+- **receipt_processing.py** — LLM integration supporting both 9Router (OpenAI-compatible) and direct Google Gemini AI, dynamic prompt construction with Firefly categories/budgets, structured JSON response via `ReceiptModel` schema
+- **config.py** — Centralized configuration using `pydantic-settings`
 - **firefly.py** — Firefly III REST API client (accounts, categories, budgets, transaction creation), 30s timeout, comprehensive HTTP error handling
 - **image_utils.py** — PIL image processing: RGB conversion, resize to max 768×768 with aspect ratio preservation
-- **models.py** — `ReceiptModel` Pydantic model (date, amount, store_name, description, category, budget)
+- **models.py** — `ReceiptModel` Pydantic model (date, amount, store_name, description, category, budget) with flexible currency/format parsing
 - **templates/** — Jinja2 templates: `base.html` (layout + PWA meta), `upload.html`, `review.html`, `error.html`
 
 ### Configuration
-Environment variables loaded via `dotenv` (see `.env.example`):
+Environment variables loaded via `pydantic-settings` (see `.env.example`):
 - `FIREFLY_III_URL` — Firefly III instance base URL
 - `FIREFLY_III_TOKEN` — Firefly III personal access token
-- `GOOGLE_AI_API_KEY` — Google Gemini API key
+- `LLM_PROVIDER` — LLM provider selection: `auto` (default), `9router` (or `openai`), or `gemini`
+- `ROUTER_BASE_URL` (or `LLM_BASE_URL`) — 9Router API base URL (e.g. `http://localhost:20128/v1` or `http://host.docker.internal:20128/v1`)
+- `ROUTER_API_KEY` (or `LLM_API_KEY`) — 9Router API key (optional/if enabled)
+- `ROUTER_MODEL` (or `LLM_MODEL`) — Model name for 9Router (defaults to `GEMINI_MODEL` or `gemini-2.5-flash`)
+- `GOOGLE_AI_API_KEY` — Google Gemini API key (required only when using direct Gemini)
 - `GEMINI_MODEL` — Gemini model name (e.g. `gemini-2.5-flash`)
+- `GEMINI_BASE_URL` — Optional custom base URL for Google Gemini SDK
 
 ### Tech Stack
 Python 3.13, FastAPI, Uvicorn, Jinja2, Pydantic, Pillow, google-genai, uv (package manager), Docker
