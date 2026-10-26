@@ -235,7 +235,9 @@ async def extract_receipt_data(
         print(f"Processing image: {fname}")
 
         # Process the image (resize and compress with more aggressive settings)
-        image, image_bytes = await process_image(file, max_size=(768, 768))
+        image, image_bytes = await process_image(
+            file, max_size=(768, 768), filename=fname
+        )
         image_base64 = base64.b64encode(image_bytes).decode("utf-8")
         print("Image processed and encoded to base64")
 

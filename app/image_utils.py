@@ -9,13 +9,18 @@ except ImportError:
     pdfium = None
 
 
-async def process_image(file: UploadFile | bytes, max_size=(768, 768)):
+async def process_image(
+    file: UploadFile | bytes,
+    max_size: tuple[int, int] = (768, 768),
+    filename: str | None = None,
+):
     """
     Process an uploaded image or PDF by converting/resizing it and compressing to JPEG.
 
     Args:
         file: The uploaded file or raw image/PDF bytes
         max_size: Maximum dimensions (width, height) for the resized image
+        filename: Optional filename to assist in format detection
 
     Returns:
         A tuple containing (PIL.Image, resized_jpeg_bytes)
@@ -23,16 +28,35 @@ async def process_image(file: UploadFile | bytes, max_size=(768, 768)):
     # Read the uploaded file or use bytes directly
     if isinstance(file, bytes):
         contents = file
+        fname = filename or ""
     else:
         contents = await file.read()
+        fname = filename or getattr(file, "filename", "") or ""
 
-    # Check if the content is a PDF (magic bytes %PDF-)
-    if contents.startswith(b"%PDF-"):
+    # Check if the content is a PDF:
+    # 1. Signature anywhere in the first 1024 bytes (per PDF spec ISO 32000-1)
+    # 2. Or filename ending in .pdf
+    # 3. Or content_type header 'application/pdf'
+    pdf_idx = contents[:1024].find(b"%PDF-")
+    is_pdf = (
+        pdf_idx != -1
+        or fname.lower().endswith(".pdf")
+        or (hasattr(file, "content_type") and getattr(file, "content_type", "") == "application/pdf")
+    )
+
+    if is_pdf:
         if pdfium is None:
-            raise ImportError(
-                "PDF processing requires 'pypdfium2'. Please install it or rebuild your Docker container."
+            raise RuntimeError(
+                "PDF receipt uploaded, but 'pypdfium2' is not installed in the container environment. "
+                "Please rebuild the container by running: docker-compose up -d --build"
             )
-        pdf = pdfium.PdfDocument(contents)
+        # Ensure buffer begins at %PDF- marker if there was leading garbage/BOM
+        pdf_data = contents[pdf_idx:] if pdf_idx > 0 else contents
+        try:
+            pdf = pdfium.PdfDocument(pdf_data)
+        except Exception as e:
+            raise ValueError(f"Failed to open PDF document: {e}") from e
+
         if len(pdf) == 0:
             raise ValueError("The uploaded PDF contains no pages.")
 
@@ -52,7 +76,13 @@ async def process_image(file: UploadFile | bytes, max_size=(768, 768)):
             img = stitched
     else:
         # Open the image using PIL
-        img = Image.open(io.BytesIO(contents))
+        try:
+            img = Image.open(io.BytesIO(contents))
+        except Exception as e:
+            raise ValueError(
+                f"Could not identify image or document format for '{fname or 'receipt'}'. "
+                "Please ensure you are uploading a valid image (JPEG, PNG, WebP) or PDF receipt."
+            ) from e
 
     # Convert to RGB if necessary (in case of RGBA or other formats)
     if img.mode != "RGB":

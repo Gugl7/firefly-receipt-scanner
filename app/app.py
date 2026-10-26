@@ -140,6 +140,9 @@ async def extract_receipt(
                 target_path = os.path.join(batch_dir, f"{valid_count}.dat")
                 with open(target_path, "wb") as f_out:
                     f_out.write(contents)
+                name_path = os.path.join(batch_dir, f"{valid_count}.name")
+                with open(name_path, "w") as f_name:
+                    f_name.write(upload_file.filename or "")
                 if valid_count == 0:
                     first_bytes = contents
                     first_filename = upload_file.filename
@@ -268,8 +271,14 @@ async def create_transaction(
                     with open(next_file_path, "rb") as f_in:
                         next_bytes = f_in.read()
 
+                    next_filename = None
+                    name_path = os.path.join(batch_dir, f"{next_index}.name")
+                    if os.path.exists(name_path):
+                        with open(name_path, "r") as f_name:
+                            next_filename = f_name.read().strip() or None
+
                     next_extracted_data = await extract_receipt_data(
-                        next_bytes, filename=f"receipt_{next_index + 1}.jpg"
+                        next_bytes, filename=next_filename or f"receipt_{next_index + 1}.jpg"
                     )
                     next_extracted_data["source_account"] = source_account
 
