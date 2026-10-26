@@ -36,7 +36,7 @@ User → FastAPI (app.py) → Google Gemini AI (receipt_processing.py)
 - **receipt_processing.py** — LLM integration supporting both 9Router (OpenAI-compatible) and direct Google Gemini AI, dynamic prompt construction with Firefly categories/budgets, structured JSON response via `ReceiptModel` schema
 - **config.py** — Centralized configuration using `pydantic-settings`
 - **firefly.py** — Firefly III REST API client (accounts, categories, budgets, transaction creation), 30s timeout, comprehensive HTTP error handling
-- **image_utils.py** — PIL image processing: RGB conversion, resize to max 768×768 with aspect ratio preservation
+- **image_utils.py** — PIL and pypdfium2 image/PDF processing: PDF conversion, RGB conversion, resize to max 768×768 with aspect ratio preservation
 - **models.py** — `ReceiptModel` Pydantic model (date, amount, store_name, description, category, budget) with flexible currency/format parsing
 - **templates/** — Jinja2 templates: `base.html` (layout + PWA meta), `upload.html`, `review.html`, `error.html`
 
@@ -53,4 +53,4 @@ Environment variables loaded via `pydantic-settings` (see `.env.example`):
 - `GEMINI_BASE_URL` — Optional custom base URL for Google Gemini SDK
 
 ### Tech Stack
-Python 3.13, FastAPI, Uvicorn, Jinja2, Pydantic, Pillow, google-genai, uv (package manager), Docker
+Python 3.13, FastAPI, Uvicorn, Jinja2, Pydantic, Pillow, pypdfium2, google-genai, uv (package manager), Docker
