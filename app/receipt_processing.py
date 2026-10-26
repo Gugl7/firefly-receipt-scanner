@@ -1,4 +1,5 @@
 import base64
+import json
 import re
 import time
 from datetime import datetime
@@ -72,11 +73,76 @@ def normalize_date(date_str: str) -> str:
     return datetime.now().strftime("%Y-%m-%d")
 
 
+def _parse_router_response(response: httpx.Response) -> str:
+    """Parse 9router response handling both standard JSON and SSE streams."""
+    raw_text = response.text.strip()
+    if not raw_text:
+        raise ValueError(
+            f"9router returned an empty response body (HTTP {response.status_code}). "
+            "Please ensure the model supports multimodal/vision inputs and that 9router is responding."
+        )
+
+    # Check if the response is an SSE stream (Server-Sent Events)
+    # Common when routing through Antigravity or stream-mandated models
+    if (
+        "text/event-stream" in response.headers.get("content-type", "")
+        or raw_text.startswith("data:")
+    ):
+        print("9router returned a streaming (SSE) response, assembling chunks...")
+        collected = []
+        for line in raw_text.splitlines():
+            line = line.strip()
+            if not line or line.startswith(":"):
+                continue
+            if line.startswith("data:"):
+                data_part = line[5:].strip()
+                if data_part == "[DONE]":
+                    continue
+                try:
+                    chunk = json.loads(data_part)
+                    choices = chunk.get("choices", [])
+                    if choices:
+                        delta = choices[0].get("delta", {})
+                        if "content" in delta and delta["content"]:
+                            collected.append(delta["content"])
+                        else:
+                            msg = choices[0].get("message", {})
+                            if "content" in msg and msg["content"]:
+                                collected.append(msg["content"])
+                except json.JSONDecodeError:
+                    continue
+
+        content = "".join(collected).strip()
+        if not content:
+            raise ValueError(
+                f"9router returned a stream with no text content: {raw_text[:200]}"
+            )
+        return content
+
+    # Standard JSON response
+    try:
+        data = response.json()
+    except Exception as e:
+        raise ValueError(
+            f"Failed to parse 9router response as JSON (HTTP {response.status_code}): {raw_text[:200]}"
+        ) from e
+
+    choices = data.get("choices", [])
+    if not choices or "message" not in choices[0]:
+        raise ValueError(f"Invalid response format from 9router: {data}")
+
+    content = choices[0]["message"].get("content", "")
+    if not content:
+        raise ValueError("9router response message content was empty.")
+    return content
+
+
 async def _extract_with_router(
     prompt: str, image_base64: str, settings: Settings
 ) -> ReceiptModel:
     headers = {
         "Content-Type": "application/json",
+        "Accept": "application/json, text/event-stream",
     }
     if settings.router_api_key:
         headers["Authorization"] = f"Bearer {settings.router_api_key}"
@@ -111,32 +177,49 @@ async def _extract_with_router(
         try:
             response = await client.post(url, headers=headers, json=payload)
             response.raise_for_status()
-            data = response.json()
-        except httpx.HTTPStatusError as e:
-            if (
-                e.response.status_code == 400
-                and "response_format" in e.response.text.lower()
-            ):
+            content = _parse_router_response(response)
+        except (httpx.HTTPStatusError, ValueError) as e:
+            should_retry_no_fmt = False
+            if "response_format" in payload:
+                if (
+                    isinstance(e, httpx.HTTPStatusError)
+                    and e.response.status_code == 400
+                    and "response_format" in e.response.text.lower()
+                ):
+                    should_retry_no_fmt = True
+                elif isinstance(e, ValueError) and "empty" in str(e).lower():
+                    should_retry_no_fmt = True
+
+            if should_retry_no_fmt:
                 print(
-                    "response_format not supported by provider, retrying without it..."
+                    "response_format not supported or produced empty output, retrying without it..."
                 )
                 payload.pop("response_format", None)
-                response = await client.post(url, headers=headers, json=payload)
-                response.raise_for_status()
-                data = response.json()
+                try:
+                    response = await client.post(url, headers=headers, json=payload)
+                    response.raise_for_status()
+                    content = _parse_router_response(response)
+                except httpx.HTTPStatusError as retry_err:
+                    err_text = retry_err.response.text
+                    print(
+                        f"9router HTTP error on retry: {retry_err.response.status_code} {err_text}"
+                    )
+                    raise RuntimeError(
+                        f"9router HTTP {retry_err.response.status_code}: {err_text or retry_err.response.reason_phrase}"
+                    ) from retry_err
+            elif isinstance(e, httpx.HTTPStatusError):
+                err_text = e.response.text
+                print(f"9router HTTP error: {e.response.status_code} {err_text}")
+                raise RuntimeError(
+                    f"9router HTTP {e.response.status_code}: {err_text or e.response.reason_phrase}"
+                ) from e
             else:
-                print(f"9router HTTP error: {e.response.status_code} {e.response.text}")
                 raise
         except httpx.TimeoutException as e:
             raise TimeoutError(
                 "The 9router request timed out. Please try again with a smaller or clearer image."
             ) from e
 
-    choices = data.get("choices", [])
-    if not choices or "message" not in choices[0]:
-        raise ValueError(f"Invalid response format from 9router: {data}")
-
-    content = choices[0]["message"].get("content", "")
     print("Received response from 9router")
     return parse_receipt_json(content)
 

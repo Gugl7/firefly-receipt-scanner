@@ -219,6 +219,26 @@ async def test_extract_with_router():
         assert result.amount == 42.50
         assert call_count == 2
 
+    # Test SSE streaming response
+    sse_lines = (
+        'data: {"id":"1","choices":[{"delta":{"content":"{\\"date\\": \\"2026-10-26\\", \\"amount\\": 15.00,"}}]}\n\n'
+        'data: {"id":"1","choices":[{"delta":{"content":" \\"store_name\\": \\"Bakery\\", \\"description\\": \\"Bread\\", \\"category\\": \\"Food\\", \\"budget\\": \\"Weekly\\"}"}}]}\n\n'
+        'data: [DONE]\n\n'
+    )
+
+    async def mock_sse_handler(request: httpx.Request):
+        return httpx.Response(
+            200,
+            text=sse_lines,
+            headers={"content-type": "text/event-stream"},
+        )
+
+    transport_sse = httpx.MockTransport(mock_sse_handler)
+    with patch("httpx.AsyncClient", return_value=httpx.AsyncClient(transport=transport_sse)):
+        result = await _extract_with_router("Test prompt", "base64image", settings)
+        assert result.amount == 15.00
+        assert result.store_name == "Bakery"
+
     print("_extract_with_router tests passed!")
 
 
