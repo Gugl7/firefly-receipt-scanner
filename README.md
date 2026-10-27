@@ -12,8 +12,8 @@ https://github.com/user-attachments/assets/ec41d8dc-71e9-4aa4-b65c-869c3dd54845
 ## Features
 
 - Upload and scan receipts using AI (supports 9Router / OpenAI-compatible routers or direct Google Gemini)
-- Supports both image uploads (JPEG, PNG, WebP) and PDF receipt documents
-- Batch processing: upload multiple receipts at once and review them one-by-one
+- Flexible input options: upload files (images & PDFs) in batches, or paste receipt text directly
+- Select and change the Firefly III source account directly during receipt review
 - Extract key information: date, amount, store name, category, and budget
 - Review and edit extracted data before creating transactions
 - Create transactions in Firefly III with a single click

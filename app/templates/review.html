@@ -74,6 +74,7 @@
     <input type="hidden" name="created_count" value="{{ created_count or 0 }}">
     <input type="hidden" name="action" id="form-action" value="create">
 
+    {% if extracted_data.image_base64 %}
     <div class="form-group checkbox-group">
         <label class="checkbox-label">
             <input type="checkbox" id="attach_receipt_checkbox" checked>
@@ -81,6 +82,9 @@
         </label>
         <input type="hidden" name="attach_receipt" id="attach_receipt_value" value="on">
     </div>
+    {% else %}
+    <input type="hidden" name="attach_receipt" id="attach_receipt_value" value="">
+    {% endif %}
 
     <div class="form-group btn-group">
         {% if batch_total and batch_total > 1 and current_index + 1 < batch_total %}
@@ -126,8 +130,11 @@
         }
     }
 
-    document.getElementById('attach_receipt_checkbox').addEventListener('change', function() {
-        document.getElementById('attach_receipt_value').value = this.checked ? 'on' : '';
-    });
+    const attachBox = document.getElementById('attach_receipt_checkbox');
+    if (attachBox) {
+        attachBox.addEventListener('change', function() {
+            document.getElementById('attach_receipt_value').value = this.checked ? 'on' : '';
+        });
+    }
 </script>
 {% endblock %} 

@@ -239,6 +239,19 @@ async def test_extract_with_router():
         assert result.amount == 15.00
         assert result.store_name == "Bakery"
 
+    # Test text-only extraction (no image)
+    async def mock_text_handler(request: httpx.Request):
+        body = json.loads(request.read())
+        assert len(body["messages"][0]["content"]) == 1
+        assert body["messages"][0]["content"][0]["type"] == "text"
+        return httpx.Response(200, json=mock_resp_data)
+
+    transport_text = httpx.MockTransport(mock_text_handler)
+    with patch("httpx.AsyncClient", return_value=httpx.AsyncClient(transport=transport_text)):
+        result = await _extract_with_router("Text prompt", None, settings)
+        assert result.amount == 42.50
+        assert result.store_name == "Supermarket"
+
     print("_extract_with_router tests passed!")
 
 

@@ -27,9 +27,9 @@ User → FastAPI (app.py) → Google Gemini AI (receipt_processing.py)
 ```
 
 ### Request Flow
-1. `GET /` — upload form, fetches asset accounts from Firefly III
-2. `POST /extract` — receives image + source account, processes image (resize/compress via `image_utils.py`), sends to Gemini with categories/budgets from Firefly III, returns review form
-3. `POST /create-transaction` — validates via `ReceiptModel`, creates withdrawal in Firefly III with `#automated` tag, 3 retries with exponential backoff
+1. `GET /` — upload form (supports file upload or text paste)
+2. `POST /extract` — receives image(s)/PDF(s) or raw receipt text, processes via LLM with categories/budgets from Firefly III, returns review form
+3. `POST /create-transaction` — validates via `ReceiptModel`, creates withdrawal in Firefly III under selected source account with `#automated` tag, 3 retries with exponential backoff (cycles through remaining batch receipts if multiple uploaded)
 
 ### Key Modules
 - **app.py** — FastAPI routes, middleware (ProxyHeaders, TrustedHost), static file mounting, startup validation of Firefly III connection

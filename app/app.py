@@ -21,7 +21,11 @@ from fastapi.templating import Jinja2Templates
 from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 
 from .firefly import get_firefly_asset_accounts, get_firefly_categories
-from .receipt_processing import create_transaction_from_data, extract_receipt_data
+from .receipt_processing import (
+    create_transaction_from_data,
+    extract_receipt_data,
+    extract_receipt_data_from_text,
+)
 
 
 def sanitize_filename(name: str) -> str:
@@ -104,14 +108,43 @@ async def root(request: Request, cancel_batch: str | None = None):
 @app.post("/extract")
 async def extract_receipt(
     request: Request,
-    source_account: str = Form(...),
+    source_account: str = Form(default=""),
     files: list[UploadFile] = File(default=[]),
     file: UploadFile | None = File(default=None),
+    receipt_text: str = Form(default=""),
 ):
     try:
         cleanup_old_batches()
 
-        # Support both multiple files ('files') and single file ('file') inputs
+        # Determine default source account from Firefly III
+        asset_accounts = get_firefly_asset_accounts() or ["Cash wallet"]
+        chosen_account = (
+            source_account.strip()
+            if source_account and source_account.strip()
+            else asset_accounts[0]
+        )
+
+        # 1. Check if receipt text was submitted (Text mode)
+        cleaned_text = receipt_text.strip() if receipt_text else ""
+        if cleaned_text:
+            print("Processing receipt from text input...")
+            extracted_data = await extract_receipt_data_from_text(cleaned_text)
+            extracted_data["source_account"] = chosen_account
+
+            return templates.TemplateResponse(
+                "review.html",
+                {
+                    "request": request,
+                    "extracted_data": extracted_data,
+                    "batch_id": "",
+                    "current_index": 0,
+                    "batch_total": 1,
+                    "created_count": 0,
+                    "asset_accounts": asset_accounts,
+                },
+            )
+
+        # 2. Files mode (Images or PDFs)
         all_files = [f for f in files if f.filename]
         if file and file.filename and file not in all_files:
             all_files.append(file)
@@ -121,7 +154,7 @@ async def extract_receipt(
                 "error.html",
                 {
                     "request": request,
-                    "error_message": "Please select at least one receipt image to upload.",
+                    "error_message": "Please upload at least one receipt file (image/PDF) or paste receipt text.",
                 },
             )
 
@@ -166,9 +199,7 @@ async def extract_receipt(
         extracted_data = await extract_receipt_data(
             first_bytes, filename=first_filename or "receipt_1.jpg"
         )
-        extracted_data["source_account"] = source_account
-
-        asset_accounts = get_firefly_asset_accounts() or [source_account]
+        extracted_data["source_account"] = chosen_account
 
         return templates.TemplateResponse(
             "review.html",

@@ -4,36 +4,35 @@
 
 {% block content %}
 <h1>Receipt Scanner</h1>
+
+<div class="mode-tabs">
+    <button type="button" class="tab-btn active" id="tab-files" onclick="setMode('files')">📁 Upload Files</button>
+    <button type="button" class="tab-btn" id="tab-text" onclick="setMode('text')">📝 Paste Text</button>
+</div>
+
 <form id="receipt-form" action="/extract" method="post" enctype="multipart/form-data" onsubmit="showLoading()">
-    <div class="form-group">
-        <label for="source_account">Source Account:</label>
-        <select id="source_account" name="source_account" required>
-            {% for account in asset_accounts %}
-            <option value="{{ account }}">{{ account }}</option>
-            {% endfor %}
-        </select>
-    </div>
-
-    <div class="camera-container">
-        <video id="camera-preview" autoplay playsinline></video>
-        <canvas id="canvas" style="display: none;"></canvas>
-        <div class="camera-buttons">
-            <button type="button" class="camera-btn start-camera" id="startCamera">Take Photo</button>
-            <button type="button" class="camera-btn capture" id="capture">Capture</button>
-            <button type="button" class="camera-btn retake" id="retake">Retake</button>
+    <!-- Files Upload Mode (Images & PDFs, single or batch) -->
+    <div id="section-files">
+        <div class="form-group">
+            <label for="files">Upload Receipt(s) (Images or PDFs):</label>
+            <input type="file" id="files" name="files" accept="image/*,application/pdf,.pdf" multiple required onchange="updateFileCount(this)">
+            <small class="helper-text">You can select one or multiple images or PDF receipts.</small>
+            <div id="file-count-badge" class="file-count-badge" style="display: none;"></div>
         </div>
+
+        <button type="submit" id="submit-btn" class="btn">Extract Receipt Data</button>
     </div>
 
-    <div class="or-divider"><span>OR</span></div>
+    <!-- Plain Text Mode (One at a time) -->
+    <div id="section-text" style="display: none;">
+        <div class="form-group">
+            <label for="receipt_text">Paste Receipt Details:</label>
+            <textarea id="receipt_text" name="receipt_text" rows="8" placeholder="Paste e-receipt, email text, or receipt summary here...&#10;&#10;e.g.&#10;Store: Target&#10;Date: 2026-10-25&#10;Total: $42.50&#10;Items: Milk, Bread, Coffee..."></textarea>
+            <small class="helper-text">Paste text from an email receipt, SMS alert, or invoice.</small>
+        </div>
 
-    <div class="form-group">
-        <label for="files">Upload Receipt(s) (Images or PDFs):</label>
-        <input type="file" id="files" name="files" accept="image/*,application/pdf,.pdf" multiple required onchange="updateFileCount(this)">
-        <small class="helper-text">You can select one or multiple images or PDF receipts.</small>
-        <div id="file-count-badge" class="file-count-badge" style="display: none;"></div>
+        <button type="submit" id="submit-text-btn" class="btn">Extract From Text</button>
     </div>
-
-    <button type="submit" id="submit-btn" class="btn">Extract Receipt Data</button>
 </form>
 
 <div id="loading" class="loading">
@@ -50,6 +49,38 @@
 
 {% block extra_scripts %}
 <script>
+    let currentMode = 'files';
+
+    function setMode(mode) {
+        currentMode = mode;
+        const tabFiles = document.getElementById('tab-files');
+        const tabText = document.getElementById('tab-text');
+        const secFiles = document.getElementById('section-files');
+        const secText = document.getElementById('section-text');
+        const filesInput = document.getElementById('files');
+        const textInput = document.getElementById('receipt_text');
+
+        if (mode === 'files') {
+            tabFiles.classList.add('active');
+            tabText.classList.remove('active');
+            secFiles.style.display = 'block';
+            secText.style.display = 'none';
+            filesInput.required = true;
+            textInput.required = false;
+            textInput.value = '';
+        } else {
+            tabText.classList.add('active');
+            tabFiles.classList.remove('active');
+            secText.style.display = 'block';
+            secFiles.style.display = 'none';
+            textInput.required = true;
+            filesInput.required = false;
+            filesInput.value = '';
+            const badge = document.getElementById('file-count-badge');
+            if (badge) badge.style.display = 'none';
+        }
+    }
+
     function updateFileCount(input) {
         const badge = document.getElementById('file-count-badge');
         const btn = document.getElementById('submit-btn');
@@ -69,14 +100,25 @@
     }
 
     function showLoading() {
-        const input = document.getElementById('files');
-        const count = input && input.files ? input.files.length : 1;
-        const msg = document.getElementById('loading-text');
-        if (msg && count > 1) {
-            msg.textContent = `Processing receipt 1 of ${count}... This may take a minute. Please don't close this page.`;
+        const loadingText = document.getElementById('loading-text');
+        if (currentMode === 'text') {
+            if (loadingText) {
+                loadingText.textContent = 'Analyzing receipt text... Please wait.';
+            }
+        } else {
+            const input = document.getElementById('files');
+            const count = input && input.files ? input.files.length : 1;
+            if (loadingText && count > 1) {
+                loadingText.textContent = `Processing receipt 1 of ${count}... This may take a minute. Please don't close this page.`;
+            } else if (loadingText) {
+                loadingText.textContent = 'Processing receipt... This may take a minute. Please don't close this page.';
+            }
         }
         document.getElementById('loading').classList.add('active');
-        document.getElementById('submit-btn').disabled = true;
+        const submitBtn = document.getElementById('submit-btn');
+        if (submitBtn) submitBtn.disabled = true;
+        const submitTextBtn = document.getElementById('submit-text-btn');
+        if (submitTextBtn) submitTextBtn.disabled = true;
     }
 </script>
 {% endblock %} 

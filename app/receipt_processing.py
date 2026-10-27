@@ -138,7 +138,7 @@ def _parse_router_response(response: httpx.Response) -> str:
 
 
 async def _extract_with_router(
-    prompt: str, image_base64: str, settings: Settings
+    prompt: str, image_base64: str | None, settings: Settings
 ) -> ReceiptModel:
     headers = {
         "Content-Type": "application/json",
@@ -147,23 +147,28 @@ async def _extract_with_router(
     if settings.router_api_key:
         headers["Authorization"] = f"Bearer {settings.router_api_key}"
 
+    user_content = [
+        {
+            "type": "text",
+            "text": prompt,
+        }
+    ]
+    if image_base64:
+        user_content.append(
+            {
+                "type": "image_url",
+                "image_url": {
+                    "url": f"data:image/jpeg;base64,{image_base64}",
+                },
+            }
+        )
+
     payload = {
         "model": settings.effective_router_model,
         "messages": [
             {
                 "role": "user",
-                "content": [
-                    {
-                        "type": "text",
-                        "text": prompt,
-                    },
-                    {
-                        "type": "image_url",
-                        "image_url": {
-                            "url": f"data:image/jpeg;base64,{image_base64}",
-                        },
-                    },
-                ],
+                "content": user_content,
             }
         ],
         "response_format": {"type": "json_object"},
@@ -224,6 +229,134 @@ async def _extract_with_router(
     return parse_receipt_json(content)
 
 
+def build_extraction_prompt(
+    categories: list[str], budgets: list[str], receipt_text: str | None = None
+) -> str:
+    target_desc = (
+        "the provided receipt text" if receipt_text else "the attached receipt image"
+    )
+    prompt = (
+        f"Please analyze {target_desc} and extract the following details:\n"
+        "1) amount (receipt total amount as a number)\n"
+        "2) category (choose the best matching category from: "
+        + ", ".join(categories)
+        + ")\n"
+        "3) budget (choose the best matching budget from: "
+        + ", ".join(budgets)
+        + ")\n"
+        "4) store_name (destination account / store or merchant name)\n"
+        "5) description (brief description of the transaction)\n"
+        "6) date (in YYYY-MM-DD format). Today's date is "
+        + datetime.now().strftime("%Y-%m-%d")
+        + ".\n"
+        "Most receipts are from the past few days, so use today's date as a reference point when interpreting dates.\n"
+        "If the date is not on the receipt, use today's date as the default.\n\n"
+    )
+    if receipt_text:
+        prompt += (
+            "--- RECEIPT TEXT START ---\n"
+            + receipt_text
+            + "\n--- RECEIPT TEXT END ---\n\n"
+        )
+    prompt += (
+        "Return ONLY a valid JSON object matching this schema:\n"
+        "{\n"
+        '  "date": "YYYY-MM-DD",\n'
+        '  "amount": 0.0,\n'
+        '  "store_name": "string",\n'
+        '  "description": "string",\n'
+        '  "category": "string",\n'
+        '  "budget": "string"\n'
+        "}"
+    )
+    return prompt
+
+
+async def _run_llm_extraction(
+    prompt: str,
+    image=None,
+    image_base64: str | None = None,
+    settings: Settings | None = None,
+) -> ReceiptModel:
+    if settings is None:
+        settings = get_settings()
+
+    if settings.effective_llm_provider == "9router":
+        return await _extract_with_router(prompt, image_base64, settings)
+
+    if not settings.google_ai_api_key:
+        raise ValueError(
+            "GOOGLE_AI_API_KEY is not set. Please set GOOGLE_AI_API_KEY in your .env or configure ROUTER_BASE_URL to use 9router."
+        )
+    try:
+        print("Sending request to Gemini for analysis...")
+        client = get_gemini_client()
+        contents = [prompt]
+        if image is not None:
+            contents.append(image)
+
+        gemini_response = client.models.generate_content(
+            model=settings.gemini_model,
+            contents=contents,
+            config={
+                "response_mime_type": "application/json",
+                "response_schema": ReceiptModel,
+            },
+        )
+        print("Received response from Gemini")
+        return gemini_response.parsed
+    except Exception as e:
+        print(f"Error during Gemini analysis: {str(e)}")
+        print(f"Error type: {type(e)}")
+        if "timeout" in str(e).lower():
+            raise TimeoutError(
+                "The image processing timed out. Please try again with a smaller or clearer image."
+            )
+        raise e
+
+
+async def extract_receipt_data_from_text(receipt_text: str):
+    """Extract receipt data from text without an image."""
+    try:
+        print("Processing receipt from text input...")
+        categories = get_firefly_categories()
+        budgets = get_firefly_budgets()
+
+        if not categories:
+            categories = [
+                "Groceries",
+                "Dining",
+                "Shopping",
+                "Transportation",
+                "Entertainment",
+                "Other",
+            ]
+            print("Using default categories due to Firefly III connection issues")
+
+        if not budgets:
+            budgets = ["Monthly", "Weekly", "Other"]
+            print("Using default budgets due to Firefly III connection issues")
+
+        prompt = build_extraction_prompt(categories, budgets, receipt_text=receipt_text)
+        receipt = await _run_llm_extraction(prompt, image=None, image_base64=None)
+        receipt.date = normalize_date(receipt.date)
+
+        return {
+            "date": receipt.date,
+            "amount": receipt.amount,
+            "store_name": receipt.store_name,
+            "description": receipt.description,
+            "category": receipt.category,
+            "budget": receipt.budget,
+            "available_categories": categories,
+            "available_budgets": budgets,
+            "image_base64": "",
+        }
+    except Exception as e:
+        print(f"Unexpected error in extract_receipt_data_from_text: {str(e)}")
+        raise
+
+
 async def extract_receipt_data(
     file: UploadFile | bytes, filename: str | None = None
 ):
@@ -265,69 +398,10 @@ async def extract_receipt_data(
             budgets = ["Monthly", "Weekly", "Other"]
             print("Using default budgets due to Firefly III connection issues")
 
-        # Construct the prompt.
-        receipt_prompt = (
-            "Please analyze the attached receipt image and extract the following details:\n"
-            "1) amount (receipt total amount as a number)\n"
-            "2) category (choose the best matching category from: "
-            + ", ".join(categories)
-            + ")\n"
-            "3) budget (choose the best matching budget from: "
-            + ", ".join(budgets)
-            + ")\n"
-            "4) store_name (destination account / store or merchant name)\n"
-            "5) description (brief description of the transaction)\n"
-            "6) date (in YYYY-MM-DD format). Today's date is "
-            + datetime.now().strftime("%Y-%m-%d")
-            + ".\n"
-            "Most receipts are from the past few days, so use today's date as a reference point when interpreting dates.\n"
-            "If the date is not on the receipt, use today's date as the default.\n\n"
-            "Return ONLY a valid JSON object matching this schema:\n"
-            "{\n"
-            '  "date": "YYYY-MM-DD",\n'
-            '  "amount": 0.0,\n'
-            '  "store_name": "string",\n'
-            '  "description": "string",\n'
-            '  "category": "string",\n'
-            '  "budget": "string"\n'
-            "}"
+        prompt = build_extraction_prompt(categories, budgets)
+        receipt = await _run_llm_extraction(
+            prompt, image=image, image_base64=image_base64
         )
-
-        settings = get_settings()
-
-        if settings.effective_llm_provider == "9router":
-            receipt = await _extract_with_router(
-                receipt_prompt, image_base64, settings
-            )
-        else:
-            if not settings.google_ai_api_key:
-                raise ValueError(
-                    "GOOGLE_AI_API_KEY is not set. Please set GOOGLE_AI_API_KEY in your .env or configure ROUTER_BASE_URL to use 9router."
-                )
-            try:
-                print("Sending request to Gemini for analysis...")
-                client = get_gemini_client()
-                gemini_response = client.models.generate_content(
-                    model=settings.gemini_model,
-                    contents=[
-                        receipt_prompt,
-                        image,
-                    ],
-                    config={
-                        "response_mime_type": "application/json",
-                        "response_schema": ReceiptModel,
-                    },
-                )
-                print("Received response from Gemini")
-                receipt = gemini_response.parsed
-            except Exception as e:
-                print(f"Error during Gemini analysis: {str(e)}")
-                print(f"Error type: {type(e)}")
-                if "timeout" in str(e).lower():
-                    raise TimeoutError(
-                        "The image processing timed out. Please try again with a smaller or clearer image."
-                    )
-                raise e
 
         # Validate and format the date
         receipt.date = normalize_date(receipt.date)
@@ -348,6 +422,8 @@ async def extract_receipt_data(
         return extracted_data
     except Exception as e:
         print(f"Unexpected error in extract_receipt_data: {str(e)}")
+        print(f"Error type: {type(e)}")
+        raise
         print(f"Error type: {type(e)}")
         raise
 
