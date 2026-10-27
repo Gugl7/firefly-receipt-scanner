@@ -302,4 +302,86 @@ input:focus, select:focus, textarea:focus {
         font-size: 14px;
         padding: 12px;
     }
-} 
+}
+
+/* Duplicate Warning Alert & Cards */
+.duplicate-warning {
+    background-color: #fff8e6;
+    border: 2px solid #f39c12;
+    border-radius: 8px;
+    padding: 16px;
+    margin-bottom: 20px;
+}
+
+.duplicate-warning-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 16px;
+    font-weight: 600;
+    color: #b7791f;
+    margin-bottom: 6px;
+}
+
+.duplicate-icon {
+    font-size: 20px;
+}
+
+.duplicate-warning-text {
+    font-size: 14px;
+    color: #4a5568;
+    margin-bottom: 12px;
+}
+
+.duplicate-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin-bottom: 12px;
+}
+
+.duplicate-item {
+    background: #ffffff;
+    border: 1px solid #fbd38d;
+    border-radius: 6px;
+    padding: 10px 12px;
+    font-size: 14px;
+}
+
+.duplicate-item-top {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+    font-weight: 600;
+    margin-bottom: 4px;
+    color: #2c3e50;
+}
+
+.dup-desc {
+    color: #718096;
+    font-size: 13px;
+    margin-bottom: 4px;
+}
+
+.dup-sub {
+    display: flex;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 8px;
+    font-size: 12px;
+    color: #718096;
+}
+
+.dup-reason {
+    color: #b7791f;
+    font-weight: 500;
+}
+
+.duplicate-hint {
+    font-size: 13px;
+    color: #744210;
+    background: #feebc8;
+    padding: 8px 12px;
+    border-radius: 4px;
+}
+ 

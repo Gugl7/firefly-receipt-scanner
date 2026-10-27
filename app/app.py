@@ -20,12 +20,35 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 
-from .firefly import get_firefly_asset_accounts, get_firefly_categories
+from .firefly import (
+    check_duplicate_transactions,
+    get_firefly_asset_accounts,
+    get_firefly_categories,
+)
 from .receipt_processing import (
     create_transaction_from_data,
     extract_receipt_data,
     extract_receipt_data_from_text,
 )
+
+# In-memory submission cache to prevent double-click / rapid re-submit duplicates
+_recent_submissions: dict[str, tuple[float, str]] = {}
+
+
+def is_duplicate_submission(submission_id: str) -> bool:
+    if not submission_id:
+        return False
+    now = time.time()
+    # Expire entries older than 5 minutes
+    expired = [k for k, (ts, _) in _recent_submissions.items() if now - ts > 300]
+    for k in expired:
+        _recent_submissions.pop(k, None)
+    return submission_id in _recent_submissions
+
+
+def record_submission(submission_id: str, result: str):
+    if submission_id:
+        _recent_submissions[submission_id] = (time.time(), result)
 
 
 def sanitize_filename(name: str) -> str:
@@ -131,6 +154,13 @@ async def extract_receipt(
             extracted_data = await extract_receipt_data_from_text(cleaned_text)
             extracted_data["source_account"] = chosen_account
 
+            duplicates = check_duplicate_transactions(
+                extracted_data.get("date", ""),
+                extracted_data.get("amount", 0.0),
+                extracted_data.get("store_name", ""),
+            )
+            submission_id = str(uuid.uuid4())
+
             return templates.TemplateResponse(
                 "review.html",
                 {
@@ -141,6 +171,8 @@ async def extract_receipt(
                     "batch_total": 1,
                     "created_count": 0,
                     "asset_accounts": asset_accounts,
+                    "duplicates": duplicates,
+                    "submission_id": submission_id,
                 },
             )
 
@@ -201,6 +233,13 @@ async def extract_receipt(
         )
         extracted_data["source_account"] = chosen_account
 
+        duplicates = check_duplicate_transactions(
+            extracted_data.get("date", ""),
+            extracted_data.get("amount", 0.0),
+            extracted_data.get("store_name", ""),
+        )
+        submission_id = str(uuid.uuid4())
+
         return templates.TemplateResponse(
             "review.html",
             {
@@ -211,6 +250,8 @@ async def extract_receipt(
                 "batch_total": valid_count,
                 "created_count": 0,
                 "asset_accounts": asset_accounts,
+                "duplicates": duplicates,
+                "submission_id": submission_id,
             },
         )
     except TimeoutError:
@@ -244,10 +285,15 @@ async def create_transaction(
     batch_total: int = Form(1),
     created_count: int = Form(0),
     action: str = Form("create"),
+    submission_id: str = Form(""),
 ):
     try:
         # 1. Process current receipt (create transaction or skip)
-        if action == "create":
+        if action == "create" and submission_id and is_duplicate_submission(submission_id):
+            print(
+                f"Duplicate submission detected for ID {submission_id}. Skipping duplicate creation."
+            )
+        elif action == "create":
             # Decode image bytes if attachment is requested
             image_bytes = None
             if attach_receipt and image_base64:
@@ -285,6 +331,8 @@ async def create_transaction(
                         "source_account": source_account,
                     },
                 )
+            if submission_id:
+                record_submission(submission_id, result)
             created_count += 1
         else:
             print(f"Skipped receipt {current_index + 1} of {batch_total}")
@@ -313,7 +361,14 @@ async def create_transaction(
                     )
                     next_extracted_data["source_account"] = source_account
 
+                    duplicates = check_duplicate_transactions(
+                        next_extracted_data.get("date", ""),
+                        next_extracted_data.get("amount", 0.0),
+                        next_extracted_data.get("store_name", ""),
+                    )
+
                     asset_accounts = get_firefly_asset_accounts() or [source_account]
+                    next_submission_id = str(uuid.uuid4())
 
                     return templates.TemplateResponse(
                         "review.html",
@@ -325,6 +380,8 @@ async def create_transaction(
                             "batch_total": batch_total,
                             "created_count": created_count,
                             "asset_accounts": asset_accounts,
+                            "duplicates": duplicates,
+                            "submission_id": next_submission_id,
                         },
                     )
                 except Exception as e:
@@ -377,3 +434,17 @@ async def create_transaction(
                 "source_account": source_account,
             },
         )
+
+
+@app.get("/api/check-duplicate")
+async def api_check_duplicate(date: str = "", amount: float = 0.0, store_name: str = ""):
+    """Check Firefly III for potential duplicate transactions."""
+    if not date or amount <= 0:
+        return {"duplicates": [], "count": 0}
+    try:
+        duplicates = check_duplicate_transactions(date, amount, store_name)
+        return {"duplicates": duplicates, "count": len(duplicates)}
+    except Exception as e:
+        print(f"Error in api_check_duplicate: {e}")
+        return {"duplicates": [], "count": 0}
+

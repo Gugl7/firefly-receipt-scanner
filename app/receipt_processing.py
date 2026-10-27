@@ -12,6 +12,7 @@ import httpx
 from .config import Settings, get_settings
 from .firefly import (
     attach_image_to_transaction,
+    check_duplicate_transactions,
     create_firefly_transaction,
     get_firefly_budgets,
     get_firefly_categories,
@@ -491,6 +492,23 @@ async def create_transaction_from_data(
             print(
                 f"Error creating transaction (attempt {attempt + 1}/{max_retries}): {e}"
             )
+
+            # Check if transaction was actually created despite error (e.g. timeout)
+            try:
+                possible_dups = check_duplicate_transactions(
+                    receipt.date, receipt.amount, receipt.store_name, tolerance_days=0
+                )
+                exact_matches = [
+                    d for d in possible_dups if d.get("confidence") == "high"
+                ]
+                if exact_matches:
+                    dup_id = exact_matches[0]["id"]
+                    print(
+                        f"Transaction was already created in Firefly III (detected ID {dup_id})"
+                    )
+                    return f"Transaction created successfully with ID: {dup_id}"
+            except Exception as dup_err:
+                print(f"Warning: Duplicate check during retry failed: {dup_err}")
 
             # If this is not the last attempt, wait and retry
             if attempt < max_retries - 1:

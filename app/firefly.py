@@ -1,5 +1,5 @@
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 from urllib.parse import urljoin
 
 import requests
@@ -71,6 +71,135 @@ def get_firefly_asset_accounts():
     except requests.exceptions.RequestException as e:
         print(f"Error fetching asset accounts: {e}")
         return []
+
+
+def check_duplicate_transactions(
+    date_str: str,
+    amount: float,
+    store_name: str = "",
+    tolerance_days: int = 1,
+) -> list[dict]:
+    """
+    Check Firefly III for existing transactions that match the given receipt's date and amount.
+    Returns a list of potential duplicate transactions.
+    """
+    settings = get_settings()
+    if not settings.firefly_iii_url or not settings.firefly_iii_token:
+        return []
+
+    try:
+        target_amount = float(amount)
+        if target_amount <= 0:
+            return []
+    except (ValueError, TypeError):
+        return []
+
+    try:
+        target_date = datetime.strptime(date_str.strip(), "%Y-%m-%d").date()
+    except (ValueError, AttributeError):
+        return []
+
+    start_date = target_date - timedelta(days=max(0, tolerance_days))
+    end_date = target_date + timedelta(days=max(0, tolerance_days))
+
+    url = urljoin(settings.firefly_api_url, "transactions")
+    headers = {
+        "Authorization": f"Bearer {settings.firefly_iii_token}",
+        "Accept": "application/json",
+    }
+    params = {
+        "start": start_date.strftime("%Y-%m-%d"),
+        "end": end_date.strftime("%Y-%m-%d"),
+        "limit": 100,
+    }
+
+    try:
+        response = requests.get(url, headers=headers, params=params, timeout=TIMEOUT)
+        response.raise_for_status()
+        data = response.json().get("data", [])
+    except Exception as e:
+        print(f"Warning: Could not check for duplicate transactions in Firefly III: {e}")
+        return []
+
+    duplicates = []
+    store_clean = (store_name or "").strip().lower()
+
+    for item in data:
+        attributes = item.get("attributes", {})
+        sub_txs = attributes.get("transactions", [])
+        for sub in sub_txs:
+            # Skip income deposits
+            if sub.get("type") == "deposit":
+                continue
+
+            try:
+                sub_amount = float(sub.get("amount", 0.0))
+            except (ValueError, TypeError):
+                continue
+
+            # Check if amounts match within 0.01
+            if abs(abs(sub_amount) - abs(target_amount)) > 0.01:
+                continue
+
+            sub_date_str = (sub.get("date") or "")[:10]
+            sub_dest = (sub.get("destination_name") or "").strip().lower()
+            sub_desc = (sub.get("description") or "").strip().lower()
+
+            date_matches = (sub_date_str == date_str)
+            store_matches = bool(
+                store_clean
+                and (
+                    store_clean == sub_dest
+                    or store_clean in sub_dest
+                    or sub_dest in store_clean
+                    or store_clean in sub_desc
+                )
+            )
+
+            # Determine confidence & reason
+            if date_matches and store_matches:
+                confidence = "high"
+                reason = "Exact match: same date, amount, and store"
+            elif date_matches:
+                confidence = "medium"
+                reason = "Same date and amount"
+            elif store_matches:
+                confidence = "medium"
+                try:
+                    diff = (
+                        datetime.strptime(sub_date_str, "%Y-%m-%d").date()
+                        - target_date
+                    ).days
+                    day_word = (
+                        "yesterday"
+                        if diff == -1
+                        else ("tomorrow" if diff == 1 else f"{abs(diff)} days away")
+                    )
+                except Exception:
+                    day_word = "nearby date"
+                reason = f"Same amount and store ({day_word})"
+            else:
+                # Different date and different store: skip to avoid false positives
+                continue
+
+            duplicates.append(
+                {
+                    "id": sub.get("transaction_journal_id") or item.get("id"),
+                    "date": sub_date_str,
+                    "amount": sub_amount,
+                    "currency_symbol": sub.get("currency_symbol") or "$",
+                    "currency_code": sub.get("currency_code") or "",
+                    "description": sub.get("description") or "",
+                    "destination_name": sub.get("destination_name") or "Unknown",
+                    "source_name": sub.get("source_name") or "",
+                    "category_name": sub.get("category_name") or "",
+                    "budget_name": sub.get("budget_name") or "",
+                    "confidence": confidence,
+                    "reason": reason,
+                }
+            )
+
+    return duplicates
 
 
 def create_firefly_transaction(receipt, source_account="Cash wallet"):

@@ -19,7 +19,38 @@
 </div>
 {% endif %}
 
-<form id="review-form" action="/create-transaction" method="post" onsubmit="showLoading()">
+<div id="duplicate-warning" class="duplicate-warning" style="{% if not duplicates %}display: none;{% endif %}">
+    <div class="duplicate-warning-header">
+        <span class="duplicate-icon">⚠️</span>
+        <strong>Potential Duplicate Detected</strong>
+    </div>
+    <p class="duplicate-warning-text">
+        Firefly III already has <span id="duplicate-count">{{ duplicates|length if duplicates else 0 }}</span> matching transaction(s):
+    </p>
+    <div id="duplicate-list" class="duplicate-list">
+        {% for dup in duplicates or [] %}
+        <div class="duplicate-item">
+            <div class="duplicate-item-top">
+                <span class="dup-date">📅 {{ dup.date }}</span>
+                <span class="dup-amount">💰 {{ dup.currency_symbol }}{{ "%.2f"|format(dup.amount) }}</span>
+                <span class="dup-store">🏬 {{ dup.destination_name }}</span>
+            </div>
+            {% if dup.description and dup.description != dup.destination_name %}
+            <div class="dup-desc"><em>"{{ dup.description }}"</em></div>
+            {% endif %}
+            <div class="dup-sub">
+                <span>Account: {{ dup.source_name }}</span>
+                <span class="dup-reason">{{ dup.reason }}</span>
+            </div>
+        </div>
+        {% endfor %}
+    </div>
+    <div class="duplicate-hint">
+        If this receipt was already entered, click <strong>Skip</strong> or <strong>Cancel</strong>.
+    </div>
+</div>
+
+<form id="review-form" action="/create-transaction" method="post">
     <div class="form-group">
         <label for="date">Date:</label>
         <input type="date" id="date" name="date" value="{{ extracted_data.date }}" required>
@@ -73,6 +104,7 @@
     <input type="hidden" name="batch_total" value="{{ batch_total or 1 }}">
     <input type="hidden" name="created_count" value="{{ created_count or 0 }}">
     <input type="hidden" name="action" id="form-action" value="create">
+    <input type="hidden" name="submission_id" value="{{ submission_id or '' }}">
 
     {% if extracted_data.image_base64 %}
     <div class="form-group checkbox-group">
@@ -93,6 +125,7 @@
             <a href="{% if batch_id %}/?cancel_batch={{ batch_id }}{% else %}/{% endif %}" class="btn btn-secondary">Cancel Batch</a>
         {% else %}
             <button type="submit" id="submit-btn" class="btn">Create Transaction</button>
+            <button type="button" class="btn btn-warning" id="skip-single-btn" onclick="skipSingle()" style="{% if not duplicates %}display: none;{% endif %}">Skip Receipt</button>
             <a href="{% if batch_id %}/?cancel_batch={{ batch_id }}{% else %}/{% endif %}" class="btn btn-secondary">Cancel</a>
         {% endif %}
     </div>
@@ -112,12 +145,24 @@
 
 {% block extra_scripts %}
 <script>
+    let hasDuplicates = {{ 'true' if duplicates and duplicates|length > 0 else 'false' }};
+    let isSubmitting = false;
+
     function showLoading(customMsg) {
         if (customMsg) {
             document.getElementById('loading-msg').textContent = customMsg;
         }
         document.getElementById('loading').classList.add('active');
-        document.getElementById('submit-btn').disabled = true;
+        const submitBtn = document.getElementById('submit-btn');
+        if (submitBtn) submitBtn.disabled = true;
+        const skipBtn = document.getElementById('skip-single-btn');
+        if (skipBtn) skipBtn.disabled = true;
+    }
+
+    function skipSingle() {
+        if (confirm("Skip this duplicate receipt and return to upload?")) {
+            window.location.href = "{% if batch_id %}/?cancel_batch={{ batch_id }}{% else %}/{% endif %}";
+        }
     }
 
     function skipCurrent() {
@@ -129,6 +174,93 @@
             form.submit();
         }
     }
+
+    const reviewForm = document.getElementById('review-form');
+    reviewForm.addEventListener('submit', function(e) {
+        if (document.getElementById('form-action').value === 'skip') {
+            return;
+        }
+        if (isSubmitting) {
+            e.preventDefault();
+            return false;
+        }
+        if (hasDuplicates) {
+            const proceed = confirm(
+                "⚠️ Potential Duplicate Detected!\n\n" +
+                "A matching transaction already exists in Firefly III for this date and amount.\n\n" +
+                "Click OK if you want to create this transaction anyway, or Cancel to review/skip."
+            );
+            if (!proceed) {
+                e.preventDefault();
+                return false;
+            }
+        }
+        isSubmitting = true;
+        showLoading();
+    });
+
+    let checkTimeout = null;
+    function checkDuplicatesDynamic() {
+        clearTimeout(checkTimeout);
+        checkTimeout = setTimeout(async () => {
+            const dateInput = document.getElementById('date');
+            const amountInput = document.getElementById('amount');
+            const storeInput = document.getElementById('store_name');
+            if (!dateInput || !amountInput) return;
+
+            const dateVal = dateInput.value.trim();
+            const amountVal = parseFloat(amountInput.value);
+            const storeVal = storeInput ? storeInput.value.trim() : '';
+
+            if (!dateVal || isNaN(amountVal) || amountVal <= 0) return;
+
+            try {
+                const resp = await fetch(`/api/check-duplicate?date=${encodeURIComponent(dateVal)}&amount=${amountVal}&store_name=${encodeURIComponent(storeVal)}`);
+                if (!resp.ok) return;
+                const data = await resp.json();
+                const warningEl = document.getElementById('duplicate-warning');
+                const listEl = document.getElementById('duplicate-list');
+                const countEl = document.getElementById('duplicate-count');
+                const skipSingleBtn = document.getElementById('skip-single-btn');
+
+                if (data.duplicates && data.duplicates.length > 0) {
+                    hasDuplicates = true;
+                    if (countEl) countEl.textContent = data.duplicates.length;
+                    if (listEl) {
+                        listEl.innerHTML = data.duplicates.map(dup => `
+                            <div class="duplicate-item">
+                                <div class="duplicate-item-top">
+                                    <span class="dup-date">📅 ${dup.date}</span>
+                                    <span class="dup-amount">💰 ${dup.currency_symbol || '$'}${parseFloat(dup.amount).toFixed(2)}</span>
+                                    <span class="dup-store">🏬 ${dup.destination_name}</span>
+                                </div>
+                                ${dup.description && dup.description !== dup.destination_name ? `<div class="dup-desc"><em>"${dup.description}"</em></div>` : ''}
+                                <div class="dup-sub">
+                                    <span>Account: ${dup.source_name}</span>
+                                    <span class="dup-reason">${dup.reason}</span>
+                                </div>
+                            </div>
+                        `).join('');
+                    }
+                    if (warningEl) warningEl.style.display = 'block';
+                    if (skipSingleBtn) skipSingleBtn.style.display = 'inline-block';
+                } else {
+                    hasDuplicates = false;
+                    if (warningEl) warningEl.style.display = 'none';
+                    if (skipSingleBtn) skipSingleBtn.style.display = 'none';
+                }
+            } catch (err) {
+                console.error('Error checking duplicates:', err);
+            }
+        }, 400);
+    }
+
+    const dateField = document.getElementById('date');
+    if (dateField) dateField.addEventListener('change', checkDuplicatesDynamic);
+    const amountField = document.getElementById('amount');
+    if (amountField) amountField.addEventListener('input', checkDuplicatesDynamic);
+    const storeField = document.getElementById('store_name');
+    if (storeField) storeField.addEventListener('input', checkDuplicatesDynamic);
 
     const attachBox = document.getElementById('attach_receipt_checkbox');
     if (attachBox) {
