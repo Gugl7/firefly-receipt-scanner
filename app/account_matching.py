@@ -19,17 +19,47 @@ def clean_card_digits(val: Any) -> str | None:
     return None
 
 
+def _normalize_mapping_dict(data: dict) -> dict[str, str]:
+    """Helper to normalize mappings where keys can be card digits or accounts."""
+    result = {}
+    for k, v in data.items():
+        if isinstance(v, (list, tuple, set)):
+            # Format: {"Easybank Giro": ["1111", "2222"]}
+            account_name = str(k).strip()
+            for card in v:
+                card_str = str(card).strip().lower()
+                if card_str:
+                    result[card_str] = account_name
+        else:
+            k_str = str(k).strip()
+            v_str = str(v).strip()
+            # If key contains multiple cards e.g. "1111, 2222" or "1111/2222" or "1111|2222"
+            if any(sep in k_str for sep in ["/", "|", ","]):
+                cards = [c.strip().lower() for c in re.split(r"[/|,\s]+", k_str) if c.strip()]
+                for card in cards:
+                    result[card] = v_str
+            # If value is card digits/cash and key is account name e.g. {"Easybank Giro": "1111"}
+            elif (clean_card_digits(v_str) is not None or v_str.lower() in ("cash", "bar", "bargeld")) and clean_card_digits(k_str) is None:
+                result[v_str.lower()] = k_str
+            else:
+                result[k_str.lower()] = v_str
+    return result
+
+
 def parse_account_card_mappings(raw: str | dict | None) -> dict[str, str]:
     """
     Parse account card mappings from either:
-    1. A dictionary
-    2. A JSON string: '{"1234": "Checking", "5678": "Credit Card", "cash": "Cash wallet"}'
-    3. Comma/newline/semicolon delimited key:value pairs: '1234:Checking, 5678:Credit Card, cash:Cash wallet'
+    1. A dictionary (supports {"1234": "Account"} or {"Account": ["1234", "5678"]})
+    2. A JSON string
+    3. Delimited pairs e.g.:
+       - '1234:Checking, 5678:Checking, cash:Cash wallet'
+       - '1234/5678:Checking, cash:Cash wallet'
+       - '1234|5678:Checking, cash:Cash wallet'
     """
     if not raw:
         return {}
     if isinstance(raw, dict):
-        return {str(k).strip().lower(): str(v).strip() for k, v in raw.items()}
+        return _normalize_mapping_dict(raw)
 
     s = str(raw).strip()
     if not s:
@@ -40,9 +70,7 @@ def parse_account_card_mappings(raw: str | dict | None) -> dict[str, str]:
         try:
             data = json.loads(s)
             if isinstance(data, dict):
-                return {
-                    str(k).strip().lower(): str(v).strip() for k, v in data.items()
-                }
+                return _normalize_mapping_dict(data)
         except Exception as e:
             print(f"Warning: Failed to parse ACCOUNT_CARD_MAPPINGS as JSON: {e}")
 
@@ -59,10 +87,14 @@ def parse_account_card_mappings(raw: str | dict | None) -> dict[str, str]:
             key, _, val = entry.partition("=")
         else:
             continue
-        k = key.strip().lower()
-        v = val.strip()
-        if k and v:
-            result[k] = v
+
+        target_acc = val.strip()
+        # Key can have multiple cards separated by / or | e.g. "1234/5678"
+        cards = [c.strip().lower() for c in re.split(r"[/|\s]+", key.strip()) if c.strip()]
+        for card in cards:
+            if card and target_acc:
+                result[card] = target_acc
+
     return result
 
 

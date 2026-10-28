@@ -46,9 +46,34 @@ def test_parse_account_card_mappings():
     assert res2["1234"] == "Easybank Giro"
     assert res2["cash"] == "Cash wallet"
 
-    # Dictionary
-    res3 = parse_account_card_mappings({"1234": "Account 1"})
-    assert res3["1234"] == "Account 1"
+    # Multiple cards for the same account:
+    # A. Multiple separate entries
+    s3 = "1111: Easybank Giro, 2222: Easybank Giro, 3333: BAWAG Credit"
+    res3 = parse_account_card_mappings(s3)
+    assert res3["1111"] == "Easybank Giro"
+    assert res3["2222"] == "Easybank Giro"
+    assert res3["3333"] == "BAWAG Credit"
+
+    # B. Slash / pipe separated cards
+    s4 = "1111/2222: Easybank Giro, 3333|4444: BAWAG Credit"
+    res4 = parse_account_card_mappings(s4)
+    assert res4["1111"] == "Easybank Giro"
+    assert res4["2222"] == "Easybank Giro"
+    assert res4["3333"] == "BAWAG Credit"
+    assert res4["4444"] == "BAWAG Credit"
+
+    # C. JSON with account as key and list of cards as value
+    s5 = '{"Easybank Giro": ["1111", "2222"], "BAWAG Credit": ["3333"]}'
+    res5 = parse_account_card_mappings(s5)
+    assert res5["1111"] == "Easybank Giro"
+    assert res5["2222"] == "Easybank Giro"
+    assert res5["3333"] == "BAWAG Credit"
+
+    # D. JSON with multiple cards in key
+    s6 = '{"1111, 2222": "Easybank Giro"}'
+    res6 = parse_account_card_mappings(s6)
+    assert res6["1111"] == "Easybank Giro"
+    assert res6["2222"] == "Easybank Giro"
 
     # Empty
     assert parse_account_card_mappings("") == {}
