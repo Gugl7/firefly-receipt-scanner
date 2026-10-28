@@ -211,16 +211,49 @@ def create_firefly_transaction(receipt, source_account="Cash wallet"):
         "Content-Type": "application/json",
     }
 
-    # Format the date to ISO 8601 format
+    # Format the date and time to ISO 8601 format
+    receipt_date = receipt.date.strip() if getattr(receipt, "date", None) else ""
+    receipt_time = getattr(receipt, "time", None)
+
+    # If receipt.date contains time (e.g. "2026-10-28 14:35" or "2026-10-28T14:35"), separate them
+    if "T" in receipt_date:
+        parts = receipt_date.split("T", 1)
+        receipt_date = parts[0].strip()
+        if not receipt_time and len(parts) > 1:
+            receipt_time = parts[1].strip()
+    elif " " in receipt_date:
+        parts = receipt_date.split(" ", 1)
+        receipt_date = parts[0].strip()
+        if not receipt_time and len(parts) > 1:
+            receipt_time = parts[1].strip()
+
+    time_str = "00:00:00"
+    if receipt_time and str(receipt_time).strip():
+        t_cleaned = str(receipt_time).strip().replace("h", ":").replace("H", ":")
+        time_formats = [
+            "%H:%M",
+            "%H:%M:%S",
+            "%I:%M %p",
+            "%I:%M:%S %p",
+            "%I:%M%p",
+            "%I:%M:%S%p",
+        ]
+        for tf in time_formats:
+            try:
+                parsed_t = datetime.strptime(t_cleaned, tf)
+                time_str = parsed_t.strftime("%H:%M:%S")
+                break
+            except ValueError:
+                continue
+
     try:
-        # Try to parse the date string into a datetime object
-        date_obj = datetime.strptime(receipt.date, "%Y-%m-%d")
-        # Format it as ISO 8601
-        formatted_date = date_obj.strftime("%Y-%m-%dT%H:%M:%S%z")
+        date_obj = datetime.strptime(receipt_date, "%Y-%m-%d")
+        h, m, s = [int(x) for x in time_str.split(":")[:3]]
+        date_obj = date_obj.replace(hour=h, minute=m, second=s)
+        formatted_date = date_obj.strftime("%Y-%m-%dT%H:%M:%S")
     except ValueError:
-        # If parsing fails, try to use the current date
-        print(f"Invalid date format: {receipt.date}. Using current date instead.")
-        formatted_date = datetime.now().strftime("%Y-%m-%dT%H:%M:%S%z")
+        print(f"Invalid date format: {receipt.date}. Using current datetime instead.")
+        formatted_date = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
 
     payload = {
         "transactions": [

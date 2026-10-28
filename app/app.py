@@ -272,6 +272,7 @@ async def extract_receipt(
 async def create_transaction(
     request: Request,
     date: str = Form(...),
+    time: str = Form(""),
     amount: float = Form(...),
     store_name: str = Form(...),
     description: str = Form(...),
@@ -306,6 +307,7 @@ async def create_transaction(
             result = await create_transaction_from_data(
                 {
                     "date": date,
+                    "time": time,
                     "amount": amount,
                     "store_name": store_name,
                     "description": description,

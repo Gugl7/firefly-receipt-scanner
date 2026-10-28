@@ -32,6 +32,15 @@ h1 {
     margin-bottom: 20px;
 }
 
+.form-row {
+    display: flex;
+    gap: 15px;
+}
+
+.form-col {
+    flex: 1;
+}
+
 label {
     display: block;
     margin-bottom: 8px;
@@ -374,6 +383,11 @@ input:focus, select:focus, textarea:focus {
     .btn-group {
         flex-direction: column;
         gap: 8px;
+    }
+
+    .form-row {
+        flex-direction: column;
+        gap: 0;
     }
 
     .btn-group .btn {

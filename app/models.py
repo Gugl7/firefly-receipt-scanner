@@ -1,17 +1,23 @@
 import re
 
-from pydantic import BaseModel, field_validator
+try:
+    from pydantic import BaseModel, field_validator
+    _validator_dec = field_validator("amount", mode="before")
+except ImportError:
+    from pydantic import BaseModel, validator
+    _validator_dec = validator("amount", pre=True)
 
 
 class ReceiptModel(BaseModel):
     date: str
+    time: str | None = None
     amount: float
     store_name: str
     description: str
     category: str
     budget: str
 
-    @field_validator("amount", mode="before")
+    @_validator_dec
     @classmethod
     def parse_amount(cls, v):
         if isinstance(v, (int, float)):

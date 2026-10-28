@@ -55,8 +55,70 @@ def parse_receipt_json(content: str) -> ReceiptModel:
     return ReceiptModel.model_validate_json(json_str)
 
 
+def normalize_time(time_str: str | None) -> str | None:
+    """Normalize extracted time string into 24-hour HH:MM format."""
+    if not time_str or not str(time_str).strip():
+        return None
+    raw = str(time_str).strip()
+    if raw.lower() in ("null", "none", "unknown", "n/a", "--:--"):
+        return None
+
+    # Replace European 'h' or '.' separator e.g. '14h35'
+    cleaned = raw.replace("h", ":").replace("H", ":").strip()
+
+    formats = [
+        "%H:%M",
+        "%H:%M:%S",
+        "%I:%M %p",
+        "%I:%M:%S %p",
+        "%I:%M%p",
+        "%I:%M:%S%p",
+    ]
+    for fmt in formats:
+        try:
+            return datetime.strptime(cleaned, fmt).strftime("%H:%M")
+        except ValueError:
+            continue
+
+    # Regex search for HH:MM (with optional seconds and AM/PM)
+    match = re.search(
+        r"\b([01]?\d|2[0-3])[:.]([0-5]\d)(?:[:.]([0-5]\d))?\s*(am|pm|AM|PM)?\b",
+        cleaned,
+    )
+    if match:
+        h, m, _, meridian = match.groups()
+        h_num = int(h)
+        if meridian:
+            if meridian.lower() == "pm" and h_num < 12:
+                h_num += 12
+            elif meridian.lower() == "am" and h_num == 12:
+                h_num = 0
+        return f"{h_num:02d}:{m}"
+
+    return None
+
+
+def extract_time_from_date_string(date_str: str) -> str | None:
+    """Extract a time substring if the date string has a combined timestamp."""
+    if not date_str:
+        return None
+    if "T" in date_str:
+        return normalize_time(date_str.split("T", 1)[1])
+    elif " " in date_str:
+        parts = date_str.split(" ", 1)
+        if len(parts) > 1:
+            return normalize_time(parts[1])
+    return None
+
+
 def normalize_date(date_str: str) -> str:
     date_str = date_str.strip()
+    # If date_str contains a time component e.g. 2026-10-28T14:35 or 2026-10-28 14:35
+    if "T" in date_str:
+        date_str = date_str.split("T", 1)[0].strip()
+    elif " " in date_str and any(c in date_str.split(" ", 1)[0] for c in ("-", "/", ".")):
+        date_str = date_str.split(" ", 1)[0].strip()
+
     formats = [
         "%Y-%m-%d",
         "%d/%m/%Y",
@@ -251,7 +313,8 @@ def build_extraction_prompt(
         + datetime.now().strftime("%Y-%m-%d")
         + ".\n"
         "Most receipts are from the past few days, so use today's date as a reference point when interpreting dates.\n"
-        "If the date is not on the receipt, use today's date as the default.\n\n"
+        "If the date is not on the receipt, use today's date as the default.\n"
+        "7) time (in 24-hour HH:MM format, e.g. '14:35'). If the exact time of purchase is printed on the receipt, extract it; otherwise set to null.\n\n"
     )
     if receipt_text:
         prompt += (
@@ -263,6 +326,7 @@ def build_extraction_prompt(
         "Return ONLY a valid JSON object matching this schema:\n"
         "{\n"
         '  "date": "YYYY-MM-DD",\n'
+        '  "time": "HH:MM",\n'
         '  "amount": 0.0,\n'
         '  "store_name": "string",\n'
         '  "description": "string",\n'
@@ -340,10 +404,14 @@ async def extract_receipt_data_from_text(receipt_text: str):
 
         prompt = build_extraction_prompt(categories, budgets, receipt_text=receipt_text)
         receipt = await _run_llm_extraction(prompt, image=None, image_base64=None)
+        if not receipt.time:
+            receipt.time = extract_time_from_date_string(receipt.date)
         receipt.date = normalize_date(receipt.date)
+        receipt.time = normalize_time(receipt.time)
 
         return {
             "date": receipt.date,
+            "time": receipt.time or "",
             "amount": receipt.amount,
             "store_name": receipt.store_name,
             "description": receipt.description,
@@ -404,12 +472,16 @@ async def extract_receipt_data(
             prompt, image=image, image_base64=image_base64
         )
 
-        # Validate and format the date
+        # Validate and format the date and time
+        if not receipt.time:
+            receipt.time = extract_time_from_date_string(receipt.date)
         receipt.date = normalize_date(receipt.date)
+        receipt.time = normalize_time(receipt.time)
 
         # Return the extracted data as a dictionary
         extracted_data = {
             "date": receipt.date,
+            "time": receipt.time or "",
             "amount": receipt.amount,
             "store_name": receipt.store_name,
             "description": receipt.description,
@@ -425,8 +497,6 @@ async def extract_receipt_data(
         print(f"Unexpected error in extract_receipt_data: {str(e)}")
         print(f"Error type: {type(e)}")
         raise
-        print(f"Error type: {type(e)}")
-        raise
 
 
 async def create_transaction_from_data(
@@ -436,6 +506,7 @@ async def create_transaction_from_data(
     # Create a ReceiptModel object from the data
     receipt = ReceiptModel(
         date=receipt_data["date"],
+        time=receipt_data.get("time") or None,
         amount=receipt_data["amount"],
         store_name=receipt_data["store_name"],
         description=receipt_data["description"],
