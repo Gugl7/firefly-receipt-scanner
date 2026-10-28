@@ -15,7 +15,14 @@
 
 {% if extracted_data.image_base64 %}
 <div class="receipt-preview-container">
-    <img src="data:image/jpeg;base64,{{ extracted_data.image_base64 }}" alt="Receipt preview" class="receipt-preview-img">
+    <img src="data:image/jpeg;base64,{{ extracted_data.image_base64 }}" alt="Receipt preview" class="receipt-preview-img" onclick="openReceiptModal()" title="Click to view full size">
+    <div class="zoom-hint" onclick="openReceiptModal()">🔍 Click image to enlarge</div>
+</div>
+
+<!-- Modal for full size view -->
+<div id="receipt-modal" class="receipt-modal" onclick="closeReceiptModal(event)">
+    <button type="button" class="receipt-modal-close" onclick="closeReceiptModal(event)" aria-label="Close full size view">&times;</button>
+    <img id="receipt-modal-img" src="data:image/jpeg;base64,{{ extracted_data.image_base64 }}" alt="Receipt full size" class="receipt-modal-content">
 </div>
 {% endif %}
 
@@ -268,5 +275,30 @@
             document.getElementById('attach_receipt_value').value = this.checked ? 'on' : '';
         });
     }
+
+    function openReceiptModal() {
+        const modal = document.getElementById('receipt-modal');
+        if (modal) {
+            modal.classList.add('active');
+            document.body.style.overflow = 'hidden';
+        }
+    }
+
+    function closeReceiptModal(e) {
+        if (e && e.target && e.target.id === 'receipt-modal-img') {
+            return;
+        }
+        const modal = document.getElementById('receipt-modal');
+        if (modal) {
+            modal.classList.remove('active');
+            document.body.style.overflow = '';
+        }
+    }
+
+    document.addEventListener('keydown', function(e) {
+        if (e.key === 'Escape') {
+            closeReceiptModal();
+        }
+    });
 </script>
 {% endblock %} 

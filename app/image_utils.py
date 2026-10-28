@@ -11,7 +11,7 @@ except ImportError:
 
 async def process_image(
     file: UploadFile | bytes,
-    max_size: tuple[int, int] = (768, 768),
+    max_size: tuple[int, int] = (1280, 1600),
     filename: str | None = None,
 ):
     """
