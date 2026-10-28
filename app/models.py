@@ -16,6 +16,8 @@ class ReceiptModel(BaseModel):
     description: str
     category: str
     budget: str
+    payment_method: str | None = None
+    card_last_four: str | None = None
 
     @_validator_dec
     @classmethod

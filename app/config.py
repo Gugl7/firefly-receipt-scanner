@@ -39,6 +39,14 @@ class Settings(BaseSettings):
         ),
     )
 
+    # Account Card Mapping (e.g. "1234:Checking, 5678:Credit Card, cash:Cash wallet" or JSON)
+    account_card_mappings: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "ACCOUNT_CARD_MAPPINGS", "CARD_MAPPINGS", "ACCOUNT_MAPPINGS"
+        ),
+    )
+
     @computed_field
     @property
     def firefly_api_url(self) -> str:

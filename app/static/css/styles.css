@@ -41,6 +41,39 @@ h1 {
     flex: 1;
 }
 
+.label-with-badge {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-bottom: 8px;
+}
+
+.label-with-badge label {
+    margin-bottom: 0;
+}
+
+.account-detected-badge {
+    background: #e8f5e9;
+    color: #2e7d32;
+    border: 1px solid #c8e6c9;
+    border-radius: 12px;
+    padding: 3px 10px;
+    font-size: 12px;
+    font-weight: 600;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.account-detected-hint {
+    color: #2e7d32;
+    font-size: 12px;
+    margin-top: 6px;
+    display: block;
+}
+
 label {
     display: block;
     margin-bottom: 8px;

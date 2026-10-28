@@ -1,0 +1,168 @@
+import json
+import os
+import re
+from typing import Any
+
+from .config import get_settings
+
+
+def clean_card_digits(val: Any) -> str | None:
+    """Extract and return the last 4 digits of a card number or string."""
+    if not val or not str(val).strip():
+        return None
+    raw = str(val).strip()
+    if raw.lower() in ("null", "none", "unknown", "n/a", "cash"):
+        return None
+    cleaned = re.sub(r"\D", "", raw)
+    if len(cleaned) >= 4:
+        return cleaned[-4:]
+    return None
+
+
+def parse_account_card_mappings(raw: str | dict | None) -> dict[str, str]:
+    """
+    Parse account card mappings from either:
+    1. A dictionary
+    2. A JSON string: '{"1234": "Checking", "5678": "Credit Card", "cash": "Cash wallet"}'
+    3. Comma/newline/semicolon delimited key:value pairs: '1234:Checking, 5678:Credit Card, cash:Cash wallet'
+    """
+    if not raw:
+        return {}
+    if isinstance(raw, dict):
+        return {str(k).strip().lower(): str(v).strip() for k, v in raw.items()}
+
+    s = str(raw).strip()
+    if not s:
+        return {}
+
+    # 1. Try parsing as JSON
+    if s.startswith("{") and s.endswith("}"):
+        try:
+            data = json.loads(s)
+            if isinstance(data, dict):
+                return {
+                    str(k).strip().lower(): str(v).strip() for k, v in data.items()
+                }
+        except Exception as e:
+            print(f"Warning: Failed to parse ACCOUNT_CARD_MAPPINGS as JSON: {e}")
+
+    # 2. Parse delimited key:value or key=value pairs
+    result = {}
+    entries = re.split(r"[,;\n]+", s)
+    for entry in entries:
+        entry = entry.strip()
+        if not entry:
+            continue
+        if ":" in entry:
+            key, _, val = entry.partition(":")
+        elif "=" in entry:
+            key, _, val = entry.partition("=")
+        else:
+            continue
+        k = key.strip().lower()
+        v = val.strip()
+        if k and v:
+            result[k] = v
+    return result
+
+
+def load_account_mappings() -> dict[str, str]:
+    """
+    Load account card mappings from account_cards.json or environment variables.
+    Environment variable (ACCOUNT_CARD_MAPPINGS) takes precedence.
+    """
+    mappings: dict[str, str] = {}
+
+    # Check for optional account_cards.json file in root or config/
+    for file_path in ["account_cards.json", "config/account_cards.json"]:
+        if os.path.exists(file_path):
+            try:
+                with open(file_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    if isinstance(data, dict):
+                        mappings.update(
+                            {
+                                str(k).strip().lower(): str(v).strip()
+                                for k, v in data.items()
+                            }
+                        )
+                break
+            except Exception as e:
+                print(f"Warning: Failed to load mappings from {file_path}: {e}")
+
+    # Load from Settings / environment variable
+    settings = get_settings()
+    env_raw = getattr(settings, "account_card_mappings", "")
+    if env_raw:
+        env_mappings = parse_account_card_mappings(env_raw)
+        mappings.update(env_mappings)
+
+    return mappings
+
+
+def match_account_for_receipt(
+    payment_method: str | None,
+    card_last_four: str | None,
+    asset_accounts: list[str],
+) -> tuple[str | None, str | None]:
+    """
+    Match an asset account based on card_last_four or cash payment.
+
+    Args:
+        payment_method: 'card', 'cash', or None/other
+        card_last_four: Digits string like '1234' or None
+        asset_accounts: Available Firefly III asset account names
+
+    Returns:
+        (matched_account_name, reason) or (None, None)
+    """
+    if not asset_accounts:
+        return None, None
+
+    mappings = load_account_mappings()
+    clean_card = clean_card_digits(card_last_four)
+    norm_method = (payment_method or "").strip().lower()
+
+    # Helper function for case-insensitive account resolution
+    def find_account(target_name: str) -> str | None:
+        target_lower = target_name.strip().lower()
+        # 1. Exact match (case-insensitive)
+        for acc in asset_accounts:
+            if acc.lower() == target_lower:
+                return acc
+        # 2. Substring match
+        for acc in asset_accounts:
+            if target_lower in acc.lower() or acc.lower() in target_lower:
+                return acc
+        return None
+
+    # 1. Check card last 4 digits
+    if clean_card:
+        # Check explicit mapping for the 4 digits
+        if clean_card in mappings:
+            matched = find_account(mappings[clean_card])
+            if matched:
+                return matched, f"Card ending in {clean_card} detected"
+
+        # Check if an asset account name itself ends in or contains the 4 digits (e.g. 'Visa (*1234)')
+        for acc in asset_accounts:
+            if clean_card in acc:
+                return acc, f"Account matched card ending in {clean_card}"
+
+    # 2. Check cash payment
+    if norm_method == "cash" or (not clean_card and "bar" in norm_method):
+        # Check explicit mapping for 'cash' or 'bar'
+        for cash_key in ["cash", "bar", "bargeld"]:
+            if cash_key in mappings:
+                matched = find_account(mappings[cash_key])
+                if matched:
+                    return matched, "Cash payment detected"
+
+        # Fallback: look for an asset account with 'cash' or 'bargeld' in its name
+        for acc in asset_accounts:
+            acc_lower = acc.lower()
+            if any(w in acc_lower for w in ["cash", "bargeld", "barge"]):
+                return acc, "Cash payment detected"
+
+    return None, None
+

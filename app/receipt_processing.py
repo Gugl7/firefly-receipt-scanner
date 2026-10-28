@@ -9,6 +9,7 @@ from fastapi import UploadFile
 from google import genai
 import httpx
 
+from .account_matching import clean_card_digits
 from .config import Settings, get_settings
 from .firefly import (
     attach_image_to_transaction,
@@ -314,7 +315,9 @@ def build_extraction_prompt(
         + ".\n"
         "Most receipts are from the past few days, so use today's date as a reference point when interpreting dates.\n"
         "If the date is not on the receipt, use today's date as the default.\n"
-        "7) time (in 24-hour HH:MM format, e.g. '14:35'). If the exact time of purchase is printed on the receipt, extract it; otherwise set to null.\n\n"
+        "7) time (in 24-hour HH:MM format, e.g. '14:35'). If the exact time of purchase is printed on the receipt, extract it; otherwise set to null.\n"
+        "8) payment_method ('card', 'cash', or 'other'). Look for card payment keywords (e.g. Visa, Mastercard, Maestro, EC, Debit, Credit, Kartenzahlung) or cash payment keywords (e.g. Cash, Bar, Barzahlung, Geg. Bar, Wechselgeld).\n"
+        "9) card_last_four (the last 4 digits of the payment card if printed on the receipt, e.g. '1234', '**** 1234', '...1234', 'PAN: *******1234'). If paid in cash or card digits are not printed, set to null.\n\n"
     )
     if receipt_text:
         prompt += (
@@ -331,7 +334,9 @@ def build_extraction_prompt(
         '  "store_name": "string",\n'
         '  "description": "string",\n'
         '  "category": "string",\n'
-        '  "budget": "string"\n'
+        '  "budget": "string",\n'
+        '  "payment_method": "card | cash | other | null",\n'
+        '  "card_last_four": "1234 | null"\n'
         "}"
     )
     return prompt
@@ -408,6 +413,7 @@ async def extract_receipt_data_from_text(receipt_text: str):
             receipt.time = extract_time_from_date_string(receipt.date)
         receipt.date = normalize_date(receipt.date)
         receipt.time = normalize_time(receipt.time)
+        clean_card = clean_card_digits(receipt.card_last_four)
 
         return {
             "date": receipt.date,
@@ -417,6 +423,8 @@ async def extract_receipt_data_from_text(receipt_text: str):
             "description": receipt.description,
             "category": receipt.category,
             "budget": receipt.budget,
+            "payment_method": (receipt.payment_method or "").strip().lower(),
+            "card_last_four": clean_card or "",
             "available_categories": categories,
             "available_budgets": budgets,
             "image_base64": "",
@@ -477,6 +485,7 @@ async def extract_receipt_data(
             receipt.time = extract_time_from_date_string(receipt.date)
         receipt.date = normalize_date(receipt.date)
         receipt.time = normalize_time(receipt.time)
+        clean_card = clean_card_digits(receipt.card_last_four)
 
         # Return the extracted data as a dictionary
         extracted_data = {
@@ -487,6 +496,8 @@ async def extract_receipt_data(
             "description": receipt.description,
             "category": receipt.category,
             "budget": receipt.budget,
+            "payment_method": (receipt.payment_method or "").strip().lower(),
+            "card_last_four": clean_card or "",
             "available_categories": categories,
             "available_budgets": budgets,
             "image_base64": image_base64,

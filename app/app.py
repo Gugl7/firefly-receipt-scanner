@@ -20,6 +20,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 
+from .account_matching import match_account_for_receipt
 from .firefly import (
     check_duplicate_transactions,
     get_firefly_asset_accounts,
@@ -152,7 +153,22 @@ async def extract_receipt(
         if cleaned_text:
             print("Processing receipt from text input...")
             extracted_data = await extract_receipt_data_from_text(cleaned_text)
+
+            matched_acc, match_reason = match_account_for_receipt(
+                extracted_data.get("payment_method"),
+                extracted_data.get("card_last_four"),
+                asset_accounts,
+            )
+            chosen_account = matched_acc or (
+                source_account.strip()
+                if source_account and source_account.strip()
+                else asset_accounts[0]
+            )
             extracted_data["source_account"] = chosen_account
+            extracted_data["recommended_account"] = matched_acc
+            extracted_data["account_match_reason"] = match_reason
+            extracted_data["detected_card"] = extracted_data.get("card_last_four")
+            extracted_data["detected_payment_method"] = extracted_data.get("payment_method")
 
             duplicates = check_duplicate_transactions(
                 extracted_data.get("date", ""),
@@ -231,7 +247,22 @@ async def extract_receipt(
         extracted_data = await extract_receipt_data(
             first_bytes, filename=first_filename or "receipt_1.jpg"
         )
+
+        matched_acc, match_reason = match_account_for_receipt(
+            extracted_data.get("payment_method"),
+            extracted_data.get("card_last_four"),
+            asset_accounts,
+        )
+        chosen_account = matched_acc or (
+            source_account.strip()
+            if source_account and source_account.strip()
+            else asset_accounts[0]
+        )
         extracted_data["source_account"] = chosen_account
+        extracted_data["recommended_account"] = matched_acc
+        extracted_data["account_match_reason"] = match_reason
+        extracted_data["detected_card"] = extracted_data.get("card_last_four")
+        extracted_data["detected_payment_method"] = extracted_data.get("payment_method")
 
         duplicates = check_duplicate_transactions(
             extracted_data.get("date", ""),
@@ -361,7 +392,19 @@ async def create_transaction(
                     next_extracted_data = await extract_receipt_data(
                         next_bytes, filename=next_filename or f"receipt_{next_index + 1}.jpg"
                     )
-                    next_extracted_data["source_account"] = source_account
+                    asset_accounts = get_firefly_asset_accounts() or [source_account]
+
+                    matched_acc, match_reason = match_account_for_receipt(
+                        next_extracted_data.get("payment_method"),
+                        next_extracted_data.get("card_last_four"),
+                        asset_accounts,
+                    )
+                    next_chosen_account = matched_acc or source_account
+                    next_extracted_data["source_account"] = next_chosen_account
+                    next_extracted_data["recommended_account"] = matched_acc
+                    next_extracted_data["account_match_reason"] = match_reason
+                    next_extracted_data["detected_card"] = next_extracted_data.get("card_last_four")
+                    next_extracted_data["detected_payment_method"] = next_extracted_data.get("payment_method")
 
                     duplicates = check_duplicate_transactions(
                         next_extracted_data.get("date", ""),
@@ -369,7 +412,6 @@ async def create_transaction(
                         next_extracted_data.get("store_name", ""),
                     )
 
-                    asset_accounts = get_firefly_asset_accounts() or [source_account]
                     next_submission_id = str(uuid.uuid4())
 
                     return templates.TemplateResponse(

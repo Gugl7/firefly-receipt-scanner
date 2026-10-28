@@ -103,12 +103,31 @@
     </div>
 
     <div class="form-group">
-        <label for="source_account">Source Account:</label>
+        <div class="label-with-badge">
+            <label for="source_account">Source Account:</label>
+            {% if extracted_data.account_match_reason %}
+            <span class="account-detected-badge" title="{{ extracted_data.account_match_reason }}">
+                {% if extracted_data.detected_payment_method == 'cash' %}💵{% else %}💳{% endif %}
+                {{ extracted_data.account_match_reason }} (Auto-selected)
+            </span>
+            {% endif %}
+        </div>
         <select id="source_account" name="source_account" required>
             {% for account in asset_accounts %}
-            <option value="{{ account }}" {% if account == extracted_data.source_account %}selected{% endif %}>{{ account }}</option>
+            <option value="{{ account }}" {% if account == extracted_data.source_account %}selected{% endif %}>
+                {{ account }}{% if extracted_data.recommended_account == account %} ⭐ Recommended{% endif %}
+            </option>
             {% endfor %}
         </select>
+        {% if extracted_data.account_match_reason %}
+        <small class="helper-text account-detected-hint">
+            {% if extracted_data.detected_card %}
+            Detected card <strong>*{{ extracted_data.detected_card }}</strong> on receipt — pre-selected <strong>{{ extracted_data.recommended_account }}</strong> based on your account mapping.
+            {% else %}
+            Detected cash payment on receipt — pre-selected <strong>{{ extracted_data.recommended_account }}</strong>.
+            {% endif %}
+        </small>
+        {% endif %}
     </div>
     
     <input type="hidden" name="image_base64" value="{{ extracted_data.image_base64 }}">
