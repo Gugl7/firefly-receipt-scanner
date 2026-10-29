@@ -102,7 +102,7 @@
         </select>
     </div>
 
-    <div class="form-group">
+    <div class="form-group" id="single-account-group" style="{% if extracted_data.is_split_payment %}display: none;{% endif %}">
         <div class="label-with-badge">
             <label for="source_account">Source Account:</label>
             {% if extracted_data.account_match_reason %}
@@ -112,7 +112,7 @@
             </span>
             {% endif %}
         </div>
-        <select id="source_account" name="source_account" required>
+        <select id="source_account" name="source_account" {% if not extracted_data.is_split_payment %}required{% endif %}>
             {% for account in asset_accounts %}
             <option value="{{ account }}" {% if account == extracted_data.source_account %}selected{% endif %}>
                 {{ account }}{% if extracted_data.recommended_account == account %} ⭐ Recommended{% endif %}
@@ -129,7 +129,39 @@
         </small>
         {% endif %}
     </div>
-    
+
+    <!-- Split Payment Toggle -->
+    <div class="form-group split-toggle-container">
+        <label class="checkbox-label">
+            <input type="checkbox" id="split_payment_checkbox" {% if extracted_data.is_split_payment %}checked{% endif %} onchange="toggleSplitPayment(this.checked)">
+            <span>✂️ <strong>Split Payment</strong> (paid with multiple accounts / cash &amp; card)</span>
+        </label>
+        {% if extracted_data.is_split_payment %}
+        <span class="account-detected-badge">⚡ Split detected on receipt</span>
+        {% endif %}
+    </div>
+
+    <!-- Split Account Section -->
+    <div id="split-account-section" class="split-box" style="{% if not extracted_data.is_split_payment %}display: none;{% endif %}">
+        <div class="split-header">
+            <div>
+                <span class="split-title">Payment Splits</span>
+                <span class="split-subtitle">Distribute the total amount across multiple asset accounts</span>
+            </div>
+            <div id="split-balance-badge" class="split-balance-badge"></div>
+        </div>
+
+        <div id="split-rows" class="split-rows">
+            <!-- Dynamically populated rows -->
+        </div>
+
+        <div class="split-footer">
+            <button type="button" class="btn btn-secondary btn-sm" onclick="addSplitRow()">+ Add Split</button>
+            <button type="button" class="btn btn-secondary btn-sm" onclick="autoBalanceSplits()" title="Adjust last split to match total">Auto-Balance</button>
+        </div>
+    </div>
+
+    <input type="hidden" name="split_payload" id="split_payload" value="">
     <input type="hidden" name="image_base64" value="{{ extracted_data.image_base64 }}">
     <input type="hidden" name="batch_id" value="{{ batch_id or '' }}">
     <input type="hidden" name="current_index" value="{{ current_index or 0 }}">
@@ -180,6 +212,10 @@
     let hasDuplicates = {{ 'true' if duplicates and duplicates|length > 0 else 'false' }};
     let isSubmitting = false;
 
+    const assetAccounts = {{ asset_accounts | tojson | safe }};
+    const initialSplits = {{ (extracted_data.splits or []) | tojson | safe }};
+    let isSplitActive = {{ 'true' if extracted_data.is_split_payment else 'false' }};
+
     function showLoading(customMsg) {
         if (customMsg) {
             document.getElementById('loading-msg').textContent = customMsg;
@@ -207,6 +243,166 @@
         }
     }
 
+    function createSplitRowElement(selectedAccount, amount, method, card) {
+        const row = document.createElement('div');
+        row.className = 'split-row';
+
+        let optionsHtml = '';
+        for (const acc of assetAccounts) {
+            const isSelected = acc === selectedAccount ? 'selected' : '';
+            optionsHtml += `<option value="${acc}" ${isSelected}>${acc}</option>`;
+        }
+
+        let methodBadge = '';
+        if (method === 'cash') {
+            methodBadge = '<span class="split-method-pill">💵 Cash</span>';
+        } else if (card) {
+            methodBadge = `<span class="split-method-pill">💳 Card *${card}</span>`;
+        }
+
+        const amtVal = (amount !== undefined && amount !== null && amount !== '') ? parseFloat(amount).toFixed(2) : '';
+
+        row.innerHTML = `
+            <div class="split-row-account">
+                <select class="split-account-select" onchange="onSplitChange()" required>
+                    ${optionsHtml}
+                </select>
+            </div>
+            <div class="split-row-amount">
+                <input type="number" step="0.01" min="0.01" class="split-amount-input" value="${amtVal}" placeholder="0.00" oninput="onSplitChange()" required>
+            </div>
+            <div class="split-row-method">
+                ${methodBadge}
+            </div>
+            <div class="split-row-remove">
+                <button type="button" class="btn-remove-split" onclick="removeSplitRow(this)" title="Remove split">✕</button>
+            </div>
+        `;
+        return row;
+    }
+
+    function addSplitRow(account, amount, method, card) {
+        const container = document.getElementById('split-rows');
+        if (!container) return;
+
+        if (!account) {
+            const usedAccounts = Array.from(container.querySelectorAll('.split-account-select')).map(s => s.value);
+            const unused = assetAccounts.find(a => !usedAccounts.includes(a));
+            account = unused || assetAccounts[0] || 'Cash wallet';
+        }
+
+        if (amount === undefined || amount === null || amount === '') {
+            const total = parseFloat(document.getElementById('amount').value) || 0;
+            let currentSum = 0;
+            container.querySelectorAll('.split-amount-input').forEach(inp => {
+                currentSum += parseFloat(inp.value) || 0;
+            });
+            const remaining = Math.max(0, total - currentSum);
+            amount = remaining > 0 ? remaining : 0.00;
+        }
+
+        const row = createSplitRowElement(account, amount, method, card);
+        container.appendChild(row);
+        onSplitChange();
+    }
+
+    function removeSplitRow(btn) {
+        const row = btn.closest('.split-row');
+        if (row) {
+            row.remove();
+            onSplitChange();
+        }
+    }
+
+    function onSplitChange() {
+        const container = document.getElementById('split-rows');
+        const badge = document.getElementById('split-balance-badge');
+        if (!container || !badge) return;
+
+        const total = parseFloat(document.getElementById('amount').value) || 0;
+        let sum = 0;
+        const splits = [];
+
+        container.querySelectorAll('.split-row').forEach(row => {
+            const acc = row.querySelector('.split-account-select').value;
+            const amt = parseFloat(row.querySelector('.split-amount-input').value) || 0;
+            sum += amt;
+            splits.push({ account: acc, amount: amt });
+        });
+
+        const diff = total - sum;
+
+        if (splits.length < 2) {
+            badge.className = 'split-balance-badge split-unbalanced';
+            badge.innerHTML = '⚠️ Need at least 2 accounts';
+        } else if (Math.abs(diff) < 0.009) {
+            badge.className = 'split-balance-badge split-balanced';
+            badge.innerHTML = '✓ Balanced (' + sum.toFixed(2) + ')';
+        } else if (diff > 0) {
+            badge.className = 'split-balance-badge split-unbalanced';
+            badge.innerHTML = '⚠️ Remaining: ' + diff.toFixed(2);
+        } else {
+            badge.className = 'split-balance-badge split-over';
+            badge.innerHTML = '⚠️ Over: +' + Math.abs(diff).toFixed(2);
+        }
+
+        const payloadInput = document.getElementById('split_payload');
+        if (payloadInput) {
+            payloadInput.value = JSON.stringify(splits);
+        }
+    }
+
+    function autoBalanceSplits() {
+        const rows = document.querySelectorAll('#split-rows .split-row');
+        if (rows.length === 0) return;
+
+        const total = parseFloat(document.getElementById('amount').value) || 0;
+        let priorSum = 0;
+        for (let i = 0; i < rows.length - 1; i++) {
+            priorSum += parseFloat(rows[i].querySelector('.split-amount-input').value) || 0;
+        }
+
+        const lastRowInput = rows[rows.length - 1].querySelector('.split-amount-input');
+        const remainder = Math.max(0, total - priorSum);
+        lastRowInput.value = remainder.toFixed(2);
+        onSplitChange();
+    }
+
+    function toggleSplitPayment(enabled) {
+        isSplitActive = enabled;
+        const splitSec = document.getElementById('split-account-section');
+        const singleSec = document.getElementById('single-account-group');
+        const sourceSelect = document.getElementById('source_account');
+
+        if (enabled) {
+            if (splitSec) splitSec.style.display = 'block';
+            if (singleSec) singleSec.style.display = 'none';
+            if (sourceSelect) sourceSelect.removeAttribute('required');
+
+            const container = document.getElementById('split-rows');
+            if (container && container.children.length === 0) {
+                if (initialSplits && initialSplits.length >= 2) {
+                    initialSplits.forEach(sp => {
+                        addSplitRow(sp.account, sp.amount, sp.payment_method, sp.card_last_four);
+                    });
+                } else {
+                    const total = parseFloat(document.getElementById('amount').value) || 0;
+                    const primaryAcc = (sourceSelect ? sourceSelect.value : '') || assetAccounts[0] || 'Cash wallet';
+                    const secondaryAcc = assetAccounts.find(a => a !== primaryAcc) || primaryAcc;
+                    addSplitRow(primaryAcc, total, null, null);
+                    addSplitRow(secondaryAcc, 0.00, null, null);
+                }
+            }
+            onSplitChange();
+        } else {
+            if (splitSec) splitSec.style.display = 'none';
+            if (singleSec) singleSec.style.display = 'block';
+            if (sourceSelect) sourceSelect.setAttribute('required', 'required');
+            const payloadInput = document.getElementById('split_payload');
+            if (payloadInput) payloadInput.value = '';
+        }
+    }
+
     const reviewForm = document.getElementById('review-form');
     reviewForm.addEventListener('submit', function(e) {
         if (document.getElementById('form-action').value === 'skip') {
@@ -216,6 +412,59 @@
             e.preventDefault();
             return false;
         }
+
+        // Validate Split Payment if enabled
+        const splitCheckbox = document.getElementById('split_payment_checkbox');
+        if (splitCheckbox && splitCheckbox.checked) {
+            const rows = document.querySelectorAll('#split-rows .split-row');
+            if (rows.length < 2) {
+                alert("Please add at least 2 split accounts, or uncheck 'Split Payment'.");
+                e.preventDefault();
+                return false;
+            }
+
+            const total = parseFloat(document.getElementById('amount').value) || 0;
+            let sum = 0;
+            const splits = [];
+
+            for (let i = 0; i < rows.length; i++) {
+                const row = rows[i];
+                const acc = row.querySelector('.split-account-select').value;
+                const amt = parseFloat(row.querySelector('.split-amount-input').value) || 0;
+                if (!acc) {
+                    alert("Please select an account for each split.");
+                    e.preventDefault();
+                    return false;
+                }
+                if (amt <= 0) {
+                    alert("Each split amount must be greater than 0.00.");
+                    e.preventDefault();
+                    return false;
+                }
+                sum += amt;
+                splits.push({ account: acc, amount: amt });
+            }
+
+            if (Math.abs(total - sum) >= 0.01) {
+                alert(
+                    "Split amounts must equal the receipt total (" + total.toFixed(2) + ").\n\n" +
+                    "Current split sum: " + sum.toFixed(2) + " (Difference: " + (total - sum).toFixed(2) + ")\n\n" +
+                    "Please adjust the amounts or click 'Auto-Balance'."
+                );
+                e.preventDefault();
+                return false;
+            }
+
+            document.getElementById('split_payload').value = JSON.stringify(splits);
+            const sourceAccSelect = document.getElementById('source_account');
+            if (sourceAccSelect && splits.length > 0) {
+                sourceAccSelect.value = splits[0].account;
+            }
+        } else {
+            const splitPayloadInput = document.getElementById('split_payload');
+            if (splitPayloadInput) splitPayloadInput.value = "";
+        }
+
         if (hasDuplicates) {
             const proceed = confirm(
                 "⚠️ Potential Duplicate Detected!\n\n" +
@@ -290,7 +539,14 @@
     const dateField = document.getElementById('date');
     if (dateField) dateField.addEventListener('change', checkDuplicatesDynamic);
     const amountField = document.getElementById('amount');
-    if (amountField) amountField.addEventListener('input', checkDuplicatesDynamic);
+    if (amountField) {
+        amountField.addEventListener('input', function() {
+            checkDuplicatesDynamic();
+            if (isSplitActive) {
+                onSplitChange();
+            }
+        });
+    }
     const storeField = document.getElementById('store_name');
     if (storeField) storeField.addEventListener('input', checkDuplicatesDynamic);
 
@@ -325,5 +581,10 @@
             closeReceiptModal();
         }
     });
+
+    // Initialize splits on page load if pre-detected
+    if (isSplitActive) {
+        toggleSplitPayment(true);
+    }
 </script>
 {% endblock %} 

@@ -202,7 +202,9 @@ def check_duplicate_transactions(
     return duplicates
 
 
-def create_firefly_transaction(receipt, source_account="Cash wallet"):
+def create_firefly_transaction(
+    receipt, source_account="Cash wallet", tags: list[str] | None = None
+):
     settings = get_settings()
     url = urljoin(settings.firefly_api_url, "transactions")
     headers = {
@@ -266,7 +268,7 @@ def create_firefly_transaction(receipt, source_account="Cash wallet"):
                 "source_name": source_account,
                 "category_name": receipt.category,
                 "budget_name": receipt.budget,
-                "tags": ["automated"],
+                "tags": tags if tags is not None else ["automated"],
             }
         ]
     }

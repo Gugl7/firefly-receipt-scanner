@@ -8,6 +8,29 @@ except ImportError:
     _validator_dec = validator("amount", pre=True)
 
 
+class PaymentSplit(BaseModel):
+    payment_method: str | None = None
+    amount: float
+    card_last_four: str | None = None
+
+    @_validator_dec
+    @classmethod
+    def parse_amount(cls, v):
+        if isinstance(v, (int, float)):
+            return float(v)
+        if isinstance(v, str):
+            cleaned = re.sub(r"[^\d.,-]", "", v.strip())
+            if "," in cleaned and "." in cleaned:
+                if cleaned.rfind(",") > cleaned.rfind("."):
+                    cleaned = cleaned.replace(".", "").replace(",", ".")
+                else:
+                    cleaned = cleaned.replace(",", "")
+            elif "," in cleaned:
+                cleaned = cleaned.replace(",", ".")
+            return float(cleaned)
+        return v
+
+
 class ReceiptModel(BaseModel):
     date: str
     time: str | None = None
@@ -18,6 +41,8 @@ class ReceiptModel(BaseModel):
     budget: str
     payment_method: str | None = None
     card_last_four: str | None = None
+    is_split_payment: bool = False
+    splits: list[PaymentSplit] = []
 
     @_validator_dec
     @classmethod

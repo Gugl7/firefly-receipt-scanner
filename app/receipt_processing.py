@@ -316,8 +316,10 @@ def build_extraction_prompt(
         "Most receipts are from the past few days, so use today's date as a reference point when interpreting dates.\n"
         "If the date is not on the receipt, use today's date as the default.\n"
         "7) time (in 24-hour HH:MM format, e.g. '14:35'). If the exact time of purchase is printed on the receipt, extract it; otherwise set to null.\n"
-        "8) payment_method ('card', 'cash', or 'other'). Look for card payment keywords (e.g. Visa, Mastercard, Maestro, EC, Debit, Credit, Kartenzahlung) or cash payment keywords (e.g. Cash, Bar, Barzahlung, Geg. Bar, Wechselgeld).\n"
-        "9) card_last_four (the last 4 digits of the payment card if printed on the receipt, e.g. '1234', '**** 1234', '...1234', 'PAN: *******1234'). If paid in cash or card digits are not printed, set to null.\n\n"
+        "8) payment_method ('card', 'cash', 'split', or 'other'). Look for card payment keywords (e.g. Visa, Mastercard, Maestro, EC, Debit, Credit, Kartenzahlung) or cash payment keywords (e.g. Cash, Bar, Barzahlung, Geg. Bar, Wechselgeld). If paid with multiple methods, specify 'split'.\n"
+        "9) card_last_four (the last 4 digits of the payment card if printed on the receipt, e.g. '1234', '**** 1234', '...1234', 'PAN: *******1234'). If paid in cash or card digits are not printed, set to null.\n"
+        "10) is_split_payment (boolean, true if the receipt was paid with multiple payment methods, e.g. part in cash and part with card; otherwise false).\n"
+        "11) splits (if is_split_payment is true, list of split payment objects with 'payment_method', 'amount', and optional 'card_last_four'; otherwise empty list []).\n\n"
     )
     if receipt_text:
         prompt += (
@@ -335,8 +337,13 @@ def build_extraction_prompt(
         '  "description": "string",\n'
         '  "category": "string",\n'
         '  "budget": "string",\n'
-        '  "payment_method": "card | cash | other | null",\n'
-        '  "card_last_four": "1234 | null"\n'
+        '  "payment_method": "card | cash | split | other | null",\n'
+        '  "card_last_four": "1234 | null",\n'
+        '  "is_split_payment": false,\n'
+        '  "splits": [\n'
+        '    {"payment_method": "cash", "amount": 0.0, "card_last_four": null},\n'
+        '    {"payment_method": "card", "amount": 0.0, "card_last_four": "1234"}\n'
+        '  ]\n'
         "}"
     )
     return prompt
@@ -415,6 +422,24 @@ async def extract_receipt_data_from_text(receipt_text: str):
         receipt.time = normalize_time(receipt.time)
         clean_card = clean_card_digits(receipt.card_last_four)
 
+        # Parse splits if split payment
+        parsed_splits = []
+        is_split = bool(getattr(receipt, "is_split_payment", False))
+        raw_splits = getattr(receipt, "splits", None) or []
+        for sp in raw_splits:
+            sp_card = clean_card_digits(sp.card_last_four)
+            try:
+                sp_amt = float(sp.amount)
+            except (ValueError, TypeError):
+                sp_amt = 0.0
+            parsed_splits.append({
+                "payment_method": (sp.payment_method or "").strip().lower(),
+                "amount": sp_amt,
+                "card_last_four": sp_card or "",
+            })
+        if len(parsed_splits) >= 2:
+            is_split = True
+
         return {
             "date": receipt.date,
             "time": receipt.time or "",
@@ -425,6 +450,8 @@ async def extract_receipt_data_from_text(receipt_text: str):
             "budget": receipt.budget,
             "payment_method": (receipt.payment_method or "").strip().lower(),
             "card_last_four": clean_card or "",
+            "is_split_payment": is_split,
+            "splits": parsed_splits,
             "available_categories": categories,
             "available_budgets": budgets,
             "image_base64": "",
@@ -487,6 +514,24 @@ async def extract_receipt_data(
         receipt.time = normalize_time(receipt.time)
         clean_card = clean_card_digits(receipt.card_last_four)
 
+        # Parse splits if split payment
+        parsed_splits = []
+        is_split = bool(getattr(receipt, "is_split_payment", False))
+        raw_splits = getattr(receipt, "splits", None) or []
+        for sp in raw_splits:
+            sp_card = clean_card_digits(sp.card_last_four)
+            try:
+                sp_amt = float(sp.amount)
+            except (ValueError, TypeError):
+                sp_amt = 0.0
+            parsed_splits.append({
+                "payment_method": (sp.payment_method or "").strip().lower(),
+                "amount": sp_amt,
+                "card_last_four": sp_card or "",
+            })
+        if len(parsed_splits) >= 2:
+            is_split = True
+
         # Return the extracted data as a dictionary
         extracted_data = {
             "date": receipt.date,
@@ -498,6 +543,8 @@ async def extract_receipt_data(
             "budget": receipt.budget,
             "payment_method": (receipt.payment_method or "").strip().lower(),
             "card_last_four": clean_card or "",
+            "is_split_payment": is_split,
+            "splits": parsed_splits,
             "available_categories": categories,
             "available_budgets": budgets,
             "image_base64": image_base64,
@@ -525,7 +572,64 @@ async def create_transaction_from_data(
         budget=receipt_data["budget"],
     )
 
-    # Implement retry logic with exponential backoff
+    # Check if this is a split payment across multiple accounts
+    splits = receipt_data.get("splits")
+    if splits and isinstance(splits, list) and len(splits) >= 2:
+        print(f"Creating split transactions for {len(splits)} accounts...")
+        created_summaries = []
+        errors = []
+
+        for idx, split in enumerate(splits):
+            split_acc = split.get("account") or source_account
+            try:
+                split_amt = float(split.get("amount", 0.0))
+            except (ValueError, TypeError):
+                continue
+            if split_amt <= 0:
+                continue
+
+            split_desc = f"{receipt.description} (Split {idx + 1}/{len(splits)})"
+            split_receipt = ReceiptModel(
+                date=receipt.date,
+                time=receipt.time,
+                amount=split_amt,
+                store_name=receipt.store_name,
+                description=split_desc,
+                category=receipt.category,
+                budget=receipt.budget,
+            )
+
+            try:
+                tx_res = create_firefly_transaction(
+                    split_receipt, split_acc, tags=["automated", "split-payment"]
+                )
+                if tx_res and "data" in tx_res:
+                    tx_id = tx_res["data"]["id"]
+                    created_summaries.append(f"{split_acc} ({split_amt:.2f})")
+                    if image_bytes:
+                        try:
+                            journal_id = int(
+                                tx_res["data"]["attributes"]["transactions"][0][
+                                    "transaction_journal_id"
+                                ]
+                            )
+                            attach_image_to_transaction(journal_id, image_bytes, filename)
+                        except Exception as e:
+                            print(f"Warning: Failed to attach image to split journal: {e}")
+                else:
+                    errors.append(f"Failed to create split for {split_acc}")
+            except Exception as e:
+                errors.append(f"Error on {split_acc}: {e}")
+
+        if created_summaries:
+            msg = f"Split payment created: {', '.join(created_summaries)}"
+            if errors:
+                msg += f" (Warnings: {'; '.join(errors)})"
+            return msg
+        else:
+            return f"Failed to create split transactions: {'; '.join(errors)}"
+
+    # Implement retry logic with exponential backoff for single transactions
     max_retries = 3  # Reduced from 5 to 3 to prevent too many duplicates
     retry_delay = 3  # Keep at 3 seconds
     last_error = None

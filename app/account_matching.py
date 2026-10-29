@@ -198,3 +198,59 @@ def match_account_for_receipt(
 
     return None, None
 
+
+def enrich_extracted_data_accounts(
+    extracted_data: dict,
+    asset_accounts: list[str],
+    fallback_account: str | None = None,
+) -> dict:
+    """
+    Enrich extracted receipt data with account matching for the main account
+    and any detected payment splits.
+    """
+    fallback = (
+        fallback_account.strip()
+        if fallback_account and fallback_account.strip()
+        else (asset_accounts[0] if asset_accounts else "Cash wallet")
+    )
+    matched_acc, match_reason = match_account_for_receipt(
+        extracted_data.get("payment_method"),
+        extracted_data.get("card_last_four"),
+        asset_accounts,
+    )
+    chosen_account = matched_acc or fallback
+    extracted_data["source_account"] = chosen_account
+    extracted_data["recommended_account"] = matched_acc
+    extracted_data["account_match_reason"] = match_reason
+    extracted_data["detected_card"] = extracted_data.get("card_last_four")
+    extracted_data["detected_payment_method"] = extracted_data.get("payment_method")
+
+    # Enrich split accounts if splits exist
+    splits = extracted_data.get("splits") or []
+    enriched_splits = []
+    if isinstance(splits, list):
+        for sp in splits:
+            if isinstance(sp, dict):
+                sp_method = sp.get("payment_method")
+                sp_card = sp.get("card_last_four")
+                sp_acc, sp_reason = match_account_for_receipt(
+                    sp_method,
+                    sp_card,
+                    asset_accounts,
+                )
+                try:
+                    sp_amt = float(sp.get("amount", 0.0) or 0.0)
+                except (ValueError, TypeError):
+                    sp_amt = 0.0
+
+                enriched_splits.append({
+                    "account": sp_acc or chosen_account,
+                    "amount": sp_amt,
+                    "payment_method": sp_method or "",
+                    "card_last_four": sp_card or "",
+                    "account_match_reason": sp_reason,
+                })
+    extracted_data["splits"] = enriched_splits
+    return extracted_data
+
+

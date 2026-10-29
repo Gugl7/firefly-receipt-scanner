@@ -1,4 +1,5 @@
 import base64
+import json
 import os
 import re
 import shutil
@@ -20,7 +21,10 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 
-from .account_matching import match_account_for_receipt
+from .account_matching import (
+    enrich_extracted_data_accounts,
+    match_account_for_receipt,
+)
 from .firefly import (
     check_duplicate_transactions,
     get_firefly_asset_accounts,
@@ -153,22 +157,9 @@ async def extract_receipt(
         if cleaned_text:
             print("Processing receipt from text input...")
             extracted_data = await extract_receipt_data_from_text(cleaned_text)
-
-            matched_acc, match_reason = match_account_for_receipt(
-                extracted_data.get("payment_method"),
-                extracted_data.get("card_last_four"),
-                asset_accounts,
+            extracted_data = enrich_extracted_data_accounts(
+                extracted_data, asset_accounts, source_account
             )
-            chosen_account = matched_acc or (
-                source_account.strip()
-                if source_account and source_account.strip()
-                else asset_accounts[0]
-            )
-            extracted_data["source_account"] = chosen_account
-            extracted_data["recommended_account"] = matched_acc
-            extracted_data["account_match_reason"] = match_reason
-            extracted_data["detected_card"] = extracted_data.get("card_last_four")
-            extracted_data["detected_payment_method"] = extracted_data.get("payment_method")
 
             duplicates = check_duplicate_transactions(
                 extracted_data.get("date", ""),
@@ -247,22 +238,9 @@ async def extract_receipt(
         extracted_data = await extract_receipt_data(
             first_bytes, filename=first_filename or "receipt_1.jpg"
         )
-
-        matched_acc, match_reason = match_account_for_receipt(
-            extracted_data.get("payment_method"),
-            extracted_data.get("card_last_four"),
-            asset_accounts,
+        extracted_data = enrich_extracted_data_accounts(
+            extracted_data, asset_accounts, source_account
         )
-        chosen_account = matched_acc or (
-            source_account.strip()
-            if source_account and source_account.strip()
-            else asset_accounts[0]
-        )
-        extracted_data["source_account"] = chosen_account
-        extracted_data["recommended_account"] = matched_acc
-        extracted_data["account_match_reason"] = match_reason
-        extracted_data["detected_card"] = extracted_data.get("card_last_four")
-        extracted_data["detected_payment_method"] = extracted_data.get("payment_method")
 
         duplicates = check_duplicate_transactions(
             extracted_data.get("date", ""),
@@ -309,7 +287,7 @@ async def create_transaction(
     description: str = Form(...),
     category: str = Form(...),
     budget: str = Form(...),
-    source_account: str = Form(...),
+    source_account: str = Form(""),
     attach_receipt: str = Form(""),
     image_base64: str = Form(""),
     batch_id: str = Form(""),
@@ -318,6 +296,7 @@ async def create_transaction(
     created_count: int = Form(0),
     action: str = Form("create"),
     submission_id: str = Form(""),
+    split_payload: str = Form(""),
 ):
     try:
         # 1. Process current receipt (create transaction or skip)
@@ -334,24 +313,53 @@ async def create_transaction(
                 except Exception as e:
                     print(f"Warning: Failed to decode image for attachment: {e}")
 
+            parsed_splits = []
+            if split_payload and split_payload.strip():
+                try:
+                    raw_parsed = json.loads(split_payload)
+                    if isinstance(raw_parsed, list):
+                        for sp in raw_parsed:
+                            if isinstance(sp, dict):
+                                try:
+                                    sp_amt = float(sp.get("amount", 0.0) or 0.0)
+                                except (ValueError, TypeError):
+                                    sp_amt = 0.0
+                                sp_acc = (sp.get("account") or "").strip()
+                                if sp_amt > 0 and sp_acc:
+                                    parsed_splits.append({
+                                        "account": sp_acc,
+                                        "amount": sp_amt,
+                                        "payment_method": sp.get("payment_method", ""),
+                                        "card_last_four": sp.get("card_last_four", ""),
+                                    })
+                except Exception as e:
+                    print(f"Warning: Failed to parse split_payload: {e}")
+
+            if not source_account and parsed_splits:
+                source_account = parsed_splits[0]["account"]
+
+            receipt_payload = {
+                "date": date,
+                "time": time,
+                "amount": amount,
+                "store_name": store_name,
+                "description": description,
+                "category": category,
+                "budget": budget,
+                "source_account": source_account,
+            }
+            if len(parsed_splits) >= 2:
+                receipt_payload["splits"] = parsed_splits
+
             # Create the transaction in Firefly III
             result = await create_transaction_from_data(
-                {
-                    "date": date,
-                    "time": time,
-                    "amount": amount,
-                    "store_name": store_name,
-                    "description": description,
-                    "category": category,
-                    "budget": budget,
-                    "source_account": source_account,
-                },
+                receipt_payload,
                 source_account,
                 image_bytes=image_bytes,
                 filename=f"receipt_{sanitize_filename(store_name)}_{sanitize_filename(date)}.jpg",
             )
 
-            if result and "Failed to create transaction" in result:
+            if result and "Failed to create" in result:
                 return templates.TemplateResponse(
                     "error.html",
                     {
@@ -393,18 +401,9 @@ async def create_transaction(
                         next_bytes, filename=next_filename or f"receipt_{next_index + 1}.jpg"
                     )
                     asset_accounts = get_firefly_asset_accounts() or [source_account]
-
-                    matched_acc, match_reason = match_account_for_receipt(
-                        next_extracted_data.get("payment_method"),
-                        next_extracted_data.get("card_last_four"),
-                        asset_accounts,
+                    next_extracted_data = enrich_extracted_data_accounts(
+                        next_extracted_data, asset_accounts, source_account
                     )
-                    next_chosen_account = matched_acc or source_account
-                    next_extracted_data["source_account"] = next_chosen_account
-                    next_extracted_data["recommended_account"] = matched_acc
-                    next_extracted_data["account_match_reason"] = match_reason
-                    next_extracted_data["detected_card"] = next_extracted_data.get("card_last_four")
-                    next_extracted_data["detected_payment_method"] = next_extracted_data.get("payment_method")
 
                     duplicates = check_duplicate_transactions(
                         next_extracted_data.get("date", ""),
