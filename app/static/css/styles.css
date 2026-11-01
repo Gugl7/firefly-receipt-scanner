@@ -311,6 +311,21 @@ input:focus, select:focus, textarea:focus {
     display: inline-block;
 }
 
+.file-type-badge {
+    display: inline-block;
+    padding: 4px 10px;
+    border-radius: 6px;
+    font-size: 13px;
+    font-weight: 600;
+    margin-bottom: 8px;
+}
+
+.pdf-badge {
+    background: #fde8e8;
+    color: #c53030;
+    border: 1px solid #feb2b2;
+}
+
 .helper-text {
     display: block;
     margin-top: 4px;

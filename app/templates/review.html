@@ -15,6 +15,9 @@
 
 {% if extracted_data.image_base64 %}
 <div class="receipt-preview-container">
+    {% if extracted_data.is_pdf %}
+    <div class="file-type-badge pdf-badge">📄 PDF Document (will be attached as original .pdf)</div>
+    {% endif %}
     <img src="data:image/jpeg;base64,{{ extracted_data.image_base64 }}" alt="Receipt preview" class="receipt-preview-img" onclick="openReceiptModal()" title="Click to view full size">
     <div class="zoom-hint" onclick="openReceiptModal()">🔍 Click image to enlarge</div>
 </div>
@@ -163,6 +166,8 @@
 
     <input type="hidden" name="split_payload" id="split_payload" value="">
     <input type="hidden" name="image_base64" value="{{ extracted_data.image_base64 }}">
+    <input type="hidden" name="original_filename" value="{{ extracted_data.original_filename or '' }}">
+    <input type="hidden" name="original_file_base64" value="{{ extracted_data.original_file_base64 or '' }}">
     <input type="hidden" name="batch_id" value="{{ batch_id or '' }}">
     <input type="hidden" name="current_index" value="{{ current_index or 0 }}">
     <input type="hidden" name="batch_total" value="{{ batch_total or 1 }}">
@@ -170,11 +175,11 @@
     <input type="hidden" name="action" id="form-action" value="create">
     <input type="hidden" name="submission_id" value="{{ submission_id or '' }}">
 
-    {% if extracted_data.image_base64 %}
+    {% if extracted_data.image_base64 or extracted_data.original_file_base64 %}
     <div class="form-group checkbox-group">
         <label class="checkbox-label">
             <input type="checkbox" id="attach_receipt_checkbox" checked>
-            <span>Attach receipt to transaction</span>
+            <span>Attach {% if extracted_data.is_pdf %}original PDF{% else %}receipt{% endif %} to transaction</span>
         </label>
         <input type="hidden" name="attach_receipt" id="attach_receipt_value" value="on">
     </div>

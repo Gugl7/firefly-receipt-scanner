@@ -31,6 +31,11 @@ from .firefly import (
     get_firefly_asset_accounts,
     get_firefly_categories,
 )
+from .image_utils import (
+    build_attachment_filename,
+    detect_file_extension,
+    sanitize_filename,
+)
 from .receipt_processing import (
     create_transaction_from_data,
     extract_receipt_data,
@@ -374,6 +379,8 @@ async def create_transaction(
     source_account: str = Form(""),
     attach_receipt: str = Form(""),
     image_base64: str = Form(""),
+    original_filename: str = Form(""),
+    original_file_base64: str = Form(""),
     batch_id: str = Form(""),
     current_index: int = Form(0),
     batch_total: int = Form(1),
@@ -383,19 +390,59 @@ async def create_transaction(
     split_payload: str = Form(""),
 ):
     try:
+        def resolve_attachment(index: int) -> tuple[bytes | None, str]:
+            if not attach_receipt:
+                return None, "receipt.jpg"
+
+            att_bytes = None
+            att_name = None
+
+            # 1. Prefer reading raw original file from batch directory on disk
+            if batch_id:
+                b_dir = os.path.join(tempfile.gettempdir(), "receipt_scanner", batch_id)
+                d_path = os.path.join(b_dir, f"{index}.dat")
+                n_path = os.path.join(b_dir, f"{index}.name")
+                if os.path.exists(d_path):
+                    try:
+                        with open(d_path, "rb") as f_d:
+                            att_bytes = f_d.read()
+                        if os.path.exists(n_path):
+                            with open(n_path, "r", encoding="utf-8") as f_n:
+                                att_name = f_n.read().strip()
+                    except Exception as e:
+                        print(f"Warning: Failed reading original attachment from batch disk: {e}")
+
+            # 2. Fallback to original_file_base64
+            if not att_bytes and original_file_base64:
+                try:
+                    att_bytes = base64.b64decode(original_file_base64)
+                    att_name = original_filename or None
+                except Exception as e:
+                    print(f"Warning: Failed decoding original_file_base64: {e}")
+
+            # 3. Final fallback to image_base64 (preview image)
+            if not att_bytes and image_base64:
+                try:
+                    att_bytes = base64.b64decode(image_base64)
+                    att_name = original_filename or "receipt.jpg"
+                except Exception as e:
+                    print(f"Warning: Failed decoding image_base64: {e}")
+
+            final_name = build_attachment_filename(
+                store_name=store_name,
+                date_str=date,
+                original_filename=att_name or original_filename,
+                file_bytes=att_bytes,
+            )
+            return att_bytes, final_name
+
         # 1. Process current receipt (create transaction or skip)
         if action == "create" and submission_id and is_duplicate_submission(submission_id):
             print(
                 f"Duplicate submission detected for ID {submission_id}. Skipping duplicate creation."
             )
         elif action == "create":
-            # Decode image bytes if attachment is requested
-            image_bytes = None
-            if attach_receipt and image_base64:
-                try:
-                    image_bytes = base64.b64decode(image_base64)
-                except Exception as e:
-                    print(f"Warning: Failed to decode image for attachment: {e}")
+            attachment_bytes, final_attachment_name = resolve_attachment(current_index)
 
             parsed_splits = []
             if split_payload and split_payload.strip():
@@ -435,12 +482,12 @@ async def create_transaction(
             if len(parsed_splits) >= 2:
                 receipt_payload["splits"] = parsed_splits
 
-            # Create the transaction in Firefly III
+            # Create the transaction in Firefly III with the original file format
             result = await create_transaction_from_data(
                 receipt_payload,
                 source_account,
-                image_bytes=image_bytes,
-                filename=f"receipt_{sanitize_filename(store_name)}_{sanitize_filename(date)}.jpg",
+                image_bytes=attachment_bytes,
+                filename=final_attachment_name,
             )
 
             if result and "Failed to create" in result:
@@ -461,12 +508,7 @@ async def create_transaction(
             created_count += 1
         elif action == "create_all":
             # 1. Create the current edited transaction first
-            image_bytes = None
-            if attach_receipt and image_base64:
-                try:
-                    image_bytes = base64.b64decode(image_base64)
-                except Exception as e:
-                    print(f"Warning: Failed to decode image for attachment: {e}")
+            attachment_bytes, final_attachment_name = resolve_attachment(current_index)
 
             parsed_splits = []
             if split_payload and split_payload.strip():
@@ -509,8 +551,8 @@ async def create_transaction(
             res0 = await create_transaction_from_data(
                 receipt_payload,
                 source_account,
-                image_bytes=image_bytes,
-                filename=f"receipt_{sanitize_filename(store_name)}_{sanitize_filename(date)}.jpg",
+                image_bytes=attachment_bytes,
+                filename=final_attachment_name,
             )
             created_count += 1
             if submission_id:
@@ -524,7 +566,7 @@ async def create_transaction(
                     dat_p = os.path.join(batch_dir, f"{rem_idx}.dat")
                     item_data = None
                     item_bytes = None
-                    item_fname = f"receipt_{rem_idx + 1}.jpg"
+                    item_fname = f"receipt_{rem_idx + 1}"
 
                     if os.path.exists(json_p):
                         try:
@@ -538,7 +580,7 @@ async def create_transaction(
                                 item_bytes = f_d.read()
                             name_p = os.path.join(batch_dir, f"{rem_idx}.name")
                             if os.path.exists(name_p):
-                                with open(name_p, "r") as f_n:
+                                with open(name_p, "r", encoding="utf-8") as f_n:
                                     item_fname = f_n.read().strip() or item_fname
                             item_data = await extract_receipt_data(item_bytes, filename=item_fname)
                         except Exception as e:
@@ -547,11 +589,17 @@ async def create_transaction(
                     if item_data:
                         try:
                             item_acc = item_data.get("source_account") or source_account or "Cash wallet"
+                            item_attachment_name = build_attachment_filename(
+                                store_name=item_data.get("store_name", "tx"),
+                                date_str=item_data.get("date", ""),
+                                original_filename=item_fname,
+                                file_bytes=item_bytes,
+                            )
                             await create_transaction_from_data(
                                 item_data,
                                 item_acc,
                                 image_bytes=item_bytes,
-                                filename=f"receipt_{sanitize_filename(item_data.get('store_name', 'tx'))}_{sanitize_filename(item_data.get('date', ''))}.jpg",
+                                filename=item_attachment_name,
                             )
                             created_count += 1
                         except Exception as e:

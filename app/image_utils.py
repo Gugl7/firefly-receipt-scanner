@@ -1,4 +1,6 @@
 import io
+import os
+import re
 
 from fastapi import UploadFile
 from PIL import Image
@@ -7,6 +9,50 @@ try:
     import pypdfium2 as pdfium
 except ImportError:
     pdfium = None
+
+
+def sanitize_filename(name: str) -> str:
+    """Make a string safe to use as an attachment filename."""
+    name = re.sub(r"[^A-Za-z0-9_-]+", "_", name).strip("_")
+    return name[:50] or "receipt"
+
+
+def detect_file_extension(
+    filename: str | None = None, file_bytes: bytes | None = None
+) -> str:
+    """Detect file extension (.pdf, .png, .jpg, .webp, etc.) from magic bytes or filename."""
+    if file_bytes:
+        # Check PDF signature anywhere in the first 1024 bytes (ISO 32000-1)
+        if file_bytes[:1024].find(b"%PDF-") != -1:
+            return ".pdf"
+        if file_bytes[:8] == b"\x89PNG\r\n\x1a\n":
+            return ".png"
+        if file_bytes[:3] == b"\xff\xd8\xff":
+            return ".jpg"
+        if file_bytes[:4] == b"RIFF" and len(file_bytes) >= 12 and file_bytes[8:12] == b"WEBP":
+            return ".webp"
+        if file_bytes[:4] in (b"GIF87a", b"GIF89a"):
+            return ".gif"
+
+    if filename and "." in filename:
+        ext = os.path.splitext(filename)[1].lower()
+        if ext in [".pdf", ".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".tiff"]:
+            return ".jpg" if ext == ".jpeg" else ext
+
+    return ".jpg"
+
+
+def build_attachment_filename(
+    store_name: str,
+    date_str: str,
+    original_filename: str | None = None,
+    file_bytes: bytes | None = None,
+) -> str:
+    """Build a sanitized attachment filename preserving the original extension (.pdf, .png, .jpg, etc.)."""
+    clean_store = sanitize_filename(store_name)
+    clean_date = sanitize_filename(date_str)
+    ext = detect_file_extension(original_filename, file_bytes)
+    return f"receipt_{clean_store}_{clean_date}{ext}"
 
 
 async def process_image(

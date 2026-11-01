@@ -469,14 +469,31 @@ async def extract_receipt_data(
         fname = filename or (
             file.filename if isinstance(file, UploadFile) else "receipt.jpg"
         )
-        print(f"Processing image: {fname}")
+        print(f"Processing receipt file: {fname}")
 
-        # Process the image (resize and compress for sharp readability and fast LLM upload)
+        # Get raw bytes of the original uploaded file
+        if isinstance(file, bytes):
+            raw_bytes = file
+        else:
+            raw_bytes = await file.read()
+            try:
+                await file.seek(0)
+            except Exception:
+                pass
+
+        # Detect if the file is a PDF
+        is_pdf = (
+            raw_bytes[:1024].find(b"%PDF-") != -1
+            or (fname and fname.lower().endswith(".pdf"))
+        )
+        original_file_base64 = base64.b64encode(raw_bytes).decode("utf-8")
+
+        # Process the image/PDF for visual LLM extraction and web UI preview
         image, image_bytes = await process_image(
-            file, max_size=(1280, 1600), filename=fname
+            raw_bytes, max_size=(1280, 1600), filename=fname
         )
         image_base64 = base64.b64encode(image_bytes).decode("utf-8")
-        print("Image processed and encoded to base64")
+        print("File processed and preview generated")
 
         # Fetch dynamic data from Firefly III
         print("Fetching categories and budgets...")
@@ -548,6 +565,9 @@ async def extract_receipt_data(
             "available_categories": categories,
             "available_budgets": budgets,
             "image_base64": image_base64,
+            "original_file_base64": original_file_base64,
+            "original_filename": fname,
+            "is_pdf": is_pdf,
         }
         print("Successfully extracted all data")
         return extracted_data
