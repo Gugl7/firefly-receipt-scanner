@@ -7,6 +7,7 @@
 
 <div class="mode-tabs">
     <button type="button" class="tab-btn active" id="tab-files" onclick="setMode('files')">📁 Upload Files</button>
+    <button type="button" class="tab-btn" id="tab-csv" onclick="setMode('csv')">📊 Import CSV</button>
     <button type="button" class="tab-btn" id="tab-text" onclick="setMode('text')">📝 Paste Text</button>
 </div>
 
@@ -15,12 +16,34 @@
     <div id="section-files">
         <div class="form-group">
             <label for="files">Upload Receipt(s) (Images or PDFs):</label>
-            <input type="file" id="files" name="files" accept="image/*,application/pdf,.pdf" multiple required onchange="updateFileCount(this)">
-            <small class="helper-text">You can select one or multiple images or PDF receipts.</small>
+            <input type="file" id="files" name="files" accept="image/*,application/pdf,.pdf,.csv" multiple required onchange="updateFileCount(this)">
+            <small class="helper-text">You can select one or multiple images, PDF receipts, or a CSV file.</small>
             <div id="file-count-badge" class="file-count-badge" style="display: none;"></div>
         </div>
 
         <button type="submit" id="submit-btn" class="btn">Extract Receipt Data</button>
+    </div>
+
+    <!-- CSV Upload Mode (Batch of transactions) -->
+    <div id="section-csv" style="display: none;">
+        <div class="form-group">
+            <label for="csv_file">Upload Bank / Transaction CSV File:</label>
+            <input type="file" id="csv_file" name="csv_file" accept=".csv,text/csv,application/vnd.ms-excel" onchange="updateCsvCount(this)">
+            <small class="helper-text">Upload bank statement or transaction export (.csv). Semicolon/comma delimiters and Austrian/German bank formats are supported automatically.</small>
+            <div id="csv-count-badge" class="file-count-badge" style="display: none;"></div>
+        </div>
+
+        <div class="form-group">
+            <label for="csv_source_account">Default Source Account:</label>
+            <select id="csv_source_account" name="csv_source_account">
+                {% for account in asset_accounts %}
+                <option value="{{ account }}">{{ account }}</option>
+                {% endfor %}
+            </select>
+            <small class="helper-text">Used for rows where no card or account mapping is detected.</small>
+        </div>
+
+        <button type="submit" id="submit-csv-btn" class="btn">Import CSV Transactions</button>
     </div>
 
     <!-- Plain Text Mode (One at a time) -->
@@ -54,28 +77,50 @@
     function setMode(mode) {
         currentMode = mode;
         const tabFiles = document.getElementById('tab-files');
+        const tabCsv = document.getElementById('tab-csv');
         const tabText = document.getElementById('tab-text');
         const secFiles = document.getElementById('section-files');
+        const secCsv = document.getElementById('section-csv');
         const secText = document.getElementById('section-text');
         const filesInput = document.getElementById('files');
+        const csvInput = document.getElementById('csv_file');
         const textInput = document.getElementById('receipt_text');
+
+        // Reset active tabs
+        tabFiles.classList.remove('active');
+        if (tabCsv) tabCsv.classList.remove('active');
+        tabText.classList.remove('active');
+
+        // Hide all sections
+        secFiles.style.display = 'none';
+        if (secCsv) secCsv.style.display = 'none';
+        secText.style.display = 'none';
+
+        // Clear requirements
+        filesInput.required = false;
+        if (csvInput) csvInput.required = false;
+        textInput.required = false;
 
         if (mode === 'files') {
             tabFiles.classList.add('active');
-            tabText.classList.remove('active');
             secFiles.style.display = 'block';
-            secText.style.display = 'none';
             filesInput.required = true;
-            textInput.required = false;
+            if (csvInput) csvInput.value = '';
             textInput.value = '';
+        } else if (mode === 'csv') {
+            if (tabCsv) tabCsv.classList.add('active');
+            if (secCsv) secCsv.style.display = 'block';
+            if (csvInput) csvInput.required = true;
+            filesInput.value = '';
+            textInput.value = '';
+            const badge = document.getElementById('file-count-badge');
+            if (badge) badge.style.display = 'none';
         } else {
             tabText.classList.add('active');
-            tabFiles.classList.remove('active');
             secText.style.display = 'block';
-            secFiles.style.display = 'none';
             textInput.required = true;
-            filesInput.required = false;
             filesInput.value = '';
+            if (csvInput) csvInput.value = '';
             const badge = document.getElementById('file-count-badge');
             if (badge) badge.style.display = 'none';
         }
@@ -90,12 +135,30 @@
             badge.style.display = 'block';
             btn.textContent = `Extract Receipt Data (${count})`;
         } else if (count === 1) {
-            badge.textContent = `📁 1 receipt selected`;
-            badge.style.display = 'block';
-            btn.textContent = 'Extract Receipt Data';
+            const fileName = input.files[0].name;
+            if (fileName.toLowerCase().endsWith('.csv')) {
+                badge.textContent = `📊 CSV file: ${fileName}`;
+                badge.style.display = 'block';
+                btn.textContent = 'Import CSV Transactions';
+            } else {
+                badge.textContent = `📁 1 receipt selected`;
+                badge.style.display = 'block';
+                btn.textContent = 'Extract Receipt Data';
+            }
         } else {
             badge.style.display = 'none';
             btn.textContent = 'Extract Receipt Data';
+        }
+    }
+
+    function updateCsvCount(input) {
+        const badge = document.getElementById('csv-count-badge');
+        if (input.files && input.files.length > 0) {
+            const name = input.files[0].name;
+            badge.textContent = `📊 Selected: ${name}`;
+            badge.style.display = 'block';
+        } else {
+            badge.style.display = 'none';
         }
     }
 
@@ -104,6 +167,10 @@
         if (currentMode === 'text') {
             if (loadingText) {
                 loadingText.textContent = 'Analyzing receipt text... Please wait.';
+            }
+        } else if (currentMode === 'csv') {
+            if (loadingText) {
+                loadingText.textContent = 'Parsing CSV transactions and checking duplicates... Please wait.';
             }
         } else {
             const input = document.getElementById('files');
@@ -117,6 +184,8 @@
         document.getElementById('loading').classList.add('active');
         const submitBtn = document.getElementById('submit-btn');
         if (submitBtn) submitBtn.disabled = true;
+        const submitCsvBtn = document.getElementById('submit-csv-btn');
+        if (submitCsvBtn) submitCsvBtn.disabled = true;
         const submitTextBtn = document.getElementById('submit-text-btn');
         if (submitTextBtn) submitTextBtn.disabled = true;
     }

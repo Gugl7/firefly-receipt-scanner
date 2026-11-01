@@ -25,6 +25,7 @@ from .account_matching import (
     enrich_extracted_data_accounts,
     match_account_for_receipt,
 )
+from .csv_processor import parse_csv_transactions
 from .firefly import (
     check_duplicate_transactions,
     get_firefly_asset_accounts,
@@ -140,6 +141,8 @@ async def extract_receipt(
     files: list[UploadFile] = File(default=[]),
     file: UploadFile | None = File(default=None),
     receipt_text: str = Form(default=""),
+    csv_file: UploadFile | None = File(default=None),
+    csv_source_account: str = Form(default=""),
 ):
     try:
         cleanup_old_batches()
@@ -183,11 +186,92 @@ async def extract_receipt(
                 },
             )
 
-        # 2. Files mode (Images or PDFs)
+        # 2. Check if a CSV file was uploaded (CSV mode)
         all_files = [f for f in files if f.filename]
         if file and file.filename and file not in all_files:
             all_files.append(file)
 
+        csv_upload = None
+        if csv_file and csv_file.filename:
+            csv_upload = csv_file
+        else:
+            for f in all_files:
+                if f.filename and f.filename.lower().endswith(".csv"):
+                    csv_upload = f
+                    break
+
+        if csv_upload:
+            print(f"Processing CSV upload: {csv_upload.filename}...")
+            csv_bytes = await csv_upload.read()
+            if not csv_bytes:
+                return templates.TemplateResponse(
+                    "error.html",
+                    {
+                        "request": request,
+                        "error_message": "Uploaded CSV file was empty. Please select a valid CSV file.",
+                    },
+                )
+
+            effective_account = (
+                csv_source_account.strip()
+                if csv_source_account and csv_source_account.strip()
+                else chosen_account
+            )
+
+            parsed_txs = parse_csv_transactions(
+                csv_bytes,
+                default_account=effective_account,
+                asset_accounts=asset_accounts,
+            )
+
+            if not parsed_txs:
+                return templates.TemplateResponse(
+                    "error.html",
+                    {
+                        "request": request,
+                        "error_message": "Could not find any valid transactions in the CSV file. Please make sure the CSV contains date and amount columns.",
+                    },
+                )
+
+            print(f"Parsed {len(parsed_txs)} transactions from CSV.")
+
+            # Create batch session directory to store parsed transactions
+            batch_id = str(uuid.uuid4())
+            batch_dir = os.path.join(tempfile.gettempdir(), "receipt_scanner", batch_id)
+            os.makedirs(batch_dir, exist_ok=True)
+
+            with open(os.path.join(batch_dir, "batch_type.txt"), "w") as f_type:
+                f_type.write("csv")
+
+            for idx, tx_data in enumerate(parsed_txs):
+                target_json = os.path.join(batch_dir, f"{idx}.json")
+                with open(target_json, "w", encoding="utf-8") as f_out:
+                    json.dump(tx_data, f_out, ensure_ascii=False)
+
+            first_tx = parsed_txs[0]
+            duplicates = check_duplicate_transactions(
+                first_tx.get("date", ""),
+                first_tx.get("amount", 0.0),
+                first_tx.get("store_name", ""),
+            )
+            submission_id = str(uuid.uuid4())
+
+            return templates.TemplateResponse(
+                "review.html",
+                {
+                    "request": request,
+                    "extracted_data": first_tx,
+                    "batch_id": batch_id,
+                    "current_index": 0,
+                    "batch_total": len(parsed_txs),
+                    "created_count": 0,
+                    "asset_accounts": asset_accounts,
+                    "duplicates": duplicates,
+                    "submission_id": submission_id,
+                },
+            )
+
+        # 3. Files mode (Images or PDFs)
         if not all_files:
             return templates.TemplateResponse(
                 "error.html",
@@ -375,6 +459,114 @@ async def create_transaction(
             if submission_id:
                 record_submission(submission_id, result)
             created_count += 1
+        elif action == "create_all":
+            # 1. Create the current edited transaction first
+            image_bytes = None
+            if attach_receipt and image_base64:
+                try:
+                    image_bytes = base64.b64decode(image_base64)
+                except Exception as e:
+                    print(f"Warning: Failed to decode image for attachment: {e}")
+
+            parsed_splits = []
+            if split_payload and split_payload.strip():
+                try:
+                    raw_parsed = json.loads(split_payload)
+                    if isinstance(raw_parsed, list):
+                        for sp in raw_parsed:
+                            if isinstance(sp, dict):
+                                try:
+                                    sp_amt = float(sp.get("amount", 0.0) or 0.0)
+                                except (ValueError, TypeError):
+                                    sp_amt = 0.0
+                                sp_acc = (sp.get("account") or "").strip()
+                                if sp_amt > 0 and sp_acc:
+                                    parsed_splits.append({
+                                        "account": sp_acc,
+                                        "amount": sp_amt,
+                                        "payment_method": sp.get("payment_method", ""),
+                                        "card_last_four": sp.get("card_last_four", ""),
+                                    })
+                except Exception as e:
+                    print(f"Warning: Failed to parse split_payload: {e}")
+
+            if not source_account and parsed_splits:
+                source_account = parsed_splits[0]["account"]
+
+            receipt_payload = {
+                "date": date,
+                "time": time,
+                "amount": amount,
+                "store_name": store_name,
+                "description": description,
+                "category": category,
+                "budget": budget,
+                "source_account": source_account,
+            }
+            if len(parsed_splits) >= 2:
+                receipt_payload["splits"] = parsed_splits
+
+            res0 = await create_transaction_from_data(
+                receipt_payload,
+                source_account,
+                image_bytes=image_bytes,
+                filename=f"receipt_{sanitize_filename(store_name)}_{sanitize_filename(date)}.jpg",
+            )
+            created_count += 1
+            if submission_id:
+                record_submission(submission_id, res0)
+
+            # 2. Process all remaining items in the batch
+            if batch_id:
+                batch_dir = os.path.join(tempfile.gettempdir(), "receipt_scanner", batch_id)
+                for rem_idx in range(current_index + 1, batch_total):
+                    json_p = os.path.join(batch_dir, f"{rem_idx}.json")
+                    dat_p = os.path.join(batch_dir, f"{rem_idx}.dat")
+                    item_data = None
+                    item_bytes = None
+                    item_fname = f"receipt_{rem_idx + 1}.jpg"
+
+                    if os.path.exists(json_p):
+                        try:
+                            with open(json_p, "r", encoding="utf-8") as f_j:
+                                item_data = json.load(f_j)
+                        except Exception as e:
+                            print(f"Error reading JSON for item {rem_idx + 1}: {e}")
+                    elif os.path.exists(dat_p):
+                        try:
+                            with open(dat_p, "rb") as f_d:
+                                item_bytes = f_d.read()
+                            name_p = os.path.join(batch_dir, f"{rem_idx}.name")
+                            if os.path.exists(name_p):
+                                with open(name_p, "r") as f_n:
+                                    item_fname = f_n.read().strip() or item_fname
+                            item_data = await extract_receipt_data(item_bytes, filename=item_fname)
+                        except Exception as e:
+                            print(f"Error extracting data for item {rem_idx + 1}: {e}")
+
+                    if item_data:
+                        try:
+                            item_acc = item_data.get("source_account") or source_account or "Cash wallet"
+                            await create_transaction_from_data(
+                                item_data,
+                                item_acc,
+                                image_bytes=item_bytes,
+                                filename=f"receipt_{sanitize_filename(item_data.get('store_name', 'tx'))}_{sanitize_filename(item_data.get('date', ''))}.jpg",
+                            )
+                            created_count += 1
+                        except Exception as e:
+                            print(f"Error creating transaction for item {rem_idx + 1}: {e}")
+
+                shutil.rmtree(batch_dir, ignore_errors=True)
+
+            return templates.TemplateResponse(
+                "upload.html",
+                {
+                    "request": request,
+                    "asset_accounts": get_firefly_asset_accounts(),
+                    "success_message": f"All {created_count} transactions created successfully!",
+                },
+            )
         else:
             print(f"Skipped receipt {current_index + 1} of {batch_total}")
 
@@ -382,8 +574,59 @@ async def create_transaction(
         next_index = current_index + 1
         if batch_id and next_index < batch_total:
             batch_dir = os.path.join(tempfile.gettempdir(), "receipt_scanner", batch_id)
+            next_json_path = os.path.join(batch_dir, f"{next_index}.json")
             next_file_path = os.path.join(batch_dir, f"{next_index}.dat")
-            if os.path.exists(next_file_path):
+
+            if os.path.exists(next_json_path):
+                print(
+                    f"Processing next batch item {next_index + 1} of {batch_total} from JSON..."
+                )
+                try:
+                    with open(next_json_path, "r", encoding="utf-8") as f_in:
+                        next_extracted_data = json.load(f_in)
+
+                    asset_accounts = get_firefly_asset_accounts() or [source_account]
+                    next_extracted_data = enrich_extracted_data_accounts(
+                        next_extracted_data,
+                        asset_accounts,
+                        next_extracted_data.get("source_account") or source_account,
+                    )
+                    duplicates = check_duplicate_transactions(
+                        next_extracted_data.get("date", ""),
+                        next_extracted_data.get("amount", 0.0),
+                        next_extracted_data.get("store_name", ""),
+                    )
+                    next_submission_id = str(uuid.uuid4())
+
+                    return templates.TemplateResponse(
+                        "review.html",
+                        {
+                            "request": request,
+                            "extracted_data": next_extracted_data,
+                            "batch_id": batch_id,
+                            "current_index": next_index,
+                            "batch_total": batch_total,
+                            "created_count": created_count,
+                            "asset_accounts": asset_accounts,
+                            "duplicates": duplicates,
+                            "submission_id": next_submission_id,
+                        },
+                    )
+                except Exception as e:
+                    print(f"Error loading JSON data for item {next_index + 1}: {e}")
+                    return templates.TemplateResponse(
+                        "error.html",
+                        {
+                            "request": request,
+                            "error_message": f"Error loading transaction {next_index + 1} of {batch_total}: {str(e)}",
+                            "batch_id": batch_id,
+                            "current_index": next_index,
+                            "batch_total": batch_total,
+                            "created_count": created_count,
+                            "source_account": source_account,
+                        },
+                    )
+            elif os.path.exists(next_file_path):
                 print(
                     f"Processing next batch receipt {next_index + 1} of {batch_total}..."
                 )

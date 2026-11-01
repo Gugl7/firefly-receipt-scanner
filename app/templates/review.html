@@ -5,7 +5,7 @@
 {% block content %}
 {% if batch_total and batch_total > 1 %}
 <div class="batch-progress">
-    <span>Receipt {{ current_index + 1 }} of {{ batch_total }}</span>
+    <span>Transaction {{ current_index + 1 }} of {{ batch_total }}</span>
     <span>{{ created_count }} created</span>
 </div>
 {% endif %}
@@ -186,10 +186,11 @@
         {% if batch_total and batch_total > 1 and current_index + 1 < batch_total %}
             <button type="submit" id="submit-btn" class="btn">Create & Next ({{ current_index + 1 }}/{{ batch_total }})</button>
             <button type="button" class="btn btn-warning" onclick="skipCurrent()">Skip</button>
+            <button type="button" class="btn btn-success" onclick="createAllRemaining()" title="Create this and all remaining transactions in Firefly III">⚡ Create All Remaining ({{ batch_total - current_index }})</button>
             <a href="{% if batch_id %}/?cancel_batch={{ batch_id }}{% else %}/{% endif %}" class="btn btn-secondary">Cancel Batch</a>
         {% else %}
             <button type="submit" id="submit-btn" class="btn">Create Transaction</button>
-            <button type="button" class="btn btn-warning" id="skip-single-btn" onclick="skipSingle()" style="{% if not duplicates %}display: none;{% endif %}">Skip Receipt</button>
+            <button type="button" class="btn btn-warning" id="skip-single-btn" onclick="skipSingle()" style="{% if not duplicates %}display: none;{% endif %}">Skip</button>
             <a href="{% if batch_id %}/?cancel_batch={{ batch_id }}{% else %}/{% endif %}" class="btn btn-secondary">Cancel</a>
         {% endif %}
     </div>
@@ -228,18 +229,27 @@
     }
 
     function skipSingle() {
-        if (confirm("Skip this duplicate receipt and return to upload?")) {
+        if (confirm("Skip this transaction and return to upload?")) {
             window.location.href = "{% if batch_id %}/?cancel_batch={{ batch_id }}{% else %}/{% endif %}";
         }
     }
 
     function skipCurrent() {
-        if (confirm('Skip this receipt and move to the next one?')) {
+        if (confirm('Skip this transaction and move to the next one?')) {
             document.getElementById('form-action').value = 'skip';
             const form = document.getElementById('review-form');
             form.noValidate = true;
-            showLoading('Skipping receipt and loading next...');
+            showLoading('Skipping transaction and loading next...');
             form.submit();
+        }
+    }
+
+    function createAllRemaining() {
+        const remaining = {{ (batch_total - current_index) if batch_total else 1 }};
+        if (confirm("Create this and all " + remaining + " remaining transactions in Firefly III automatically?")) {
+            document.getElementById('form-action').value = 'create_all';
+            showLoading("Creating remaining " + remaining + " transactions in Firefly III... Please don't close this page.");
+            document.getElementById('review-form').submit();
         }
     }
 
