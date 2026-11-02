@@ -412,7 +412,7 @@ def build_extraction_prompt(
             "1) amount (receipt total amount as a number)\n"
             "2) category (choose the best matching category from: "
             + ", ".join(categories)
-            + ")\n"
+            + ", or null if no category applies or none is needed)\n"
             "3) budget (choose the best matching budget from: "
             + (", ".join(budgets) if budgets else "None")
             + ", or null if no budget applies or none is needed)\n"
@@ -442,7 +442,7 @@ def build_extraction_prompt(
             '      "amount": 0.0,\n'
             '      "store_name": "string",\n'
             '      "description": "string",\n'
-            '      "category": "string",\n'
+            '      "category": "string | null",\n'
             '      "budget": "string | null",\n'
             '      "payment_method": "card | cash | split | other | null",\n'
             '      "card_last_four": "1234 | null",\n'
@@ -463,7 +463,7 @@ def build_extraction_prompt(
         "1) amount (receipt total amount as a number)\n"
         "2) category (choose the best matching category from: "
         + ", ".join(categories)
-        + ")\n"
+        + ", or null if no category applies or none is needed)\n"
         "3) budget (choose the best matching budget from: "
         + (", ".join(budgets) if budgets else "None")
         + ", or null if no budget applies or none is needed)\n"
@@ -488,7 +488,7 @@ def build_extraction_prompt(
         '  "amount": 0.0,\n'
         '  "store_name": "string",\n'
         '  "description": "string",\n'
-        '  "category": "string",\n'
+        '  "category": "string | null",\n'
         '  "budget": "string | null",\n'
         '  "payment_method": "card | cash | split | other | null",\n'
         '  "card_last_four": "1234 | null",\n'
@@ -637,9 +637,14 @@ async def extract_receipt_data_from_text(
             if len(parsed_splits) >= 2:
                 is_split = True
 
+            clean_category = (
+                receipt.category.strip()
+                if receipt.category and str(receipt.category).strip().lower() not in ("none", "null")
+                else ""
+            )
             clean_budget = (
                 receipt.budget.strip()
-                if receipt.budget and receipt.budget.strip().lower() not in ("none", "null")
+                if receipt.budget and str(receipt.budget).strip().lower() not in ("none", "null")
                 else ""
             )
 
@@ -649,7 +654,7 @@ async def extract_receipt_data_from_text(
                 "amount": receipt.amount,
                 "store_name": receipt.store_name,
                 "description": receipt.description,
-                "category": receipt.category,
+                "category": clean_category,
                 "budget": clean_budget,
                 "payment_method": (receipt.payment_method or "").strip().lower(),
                 "card_last_four": clean_card or "",
@@ -760,9 +765,14 @@ async def extract_receipt_data(
         if len(parsed_splits) >= 2:
             is_split = True
 
+        clean_category = (
+            receipt.category.strip()
+            if receipt.category and str(receipt.category).strip().lower() not in ("none", "null")
+            else ""
+        )
         clean_budget = (
             receipt.budget.strip()
-            if receipt.budget and receipt.budget.strip().lower() not in ("none", "null")
+            if receipt.budget and str(receipt.budget).strip().lower() not in ("none", "null")
             else ""
         )
 
@@ -773,7 +783,7 @@ async def extract_receipt_data(
             "amount": receipt.amount,
             "store_name": receipt.store_name,
             "description": receipt.description,
-            "category": receipt.category,
+            "category": clean_category,
             "budget": clean_budget,
             "payment_method": (receipt.payment_method or "").strip().lower(),
             "card_last_four": clean_card or "",
@@ -809,6 +819,13 @@ async def create_transaction_from_data(
         else None
     )
 
+    raw_cat = receipt_data.get("category")
+    clean_category = (
+        raw_cat.strip()
+        if raw_cat and str(raw_cat).strip().lower() not in ("none", "null")
+        else None
+    )
+
     # Create a ReceiptModel object from the data
     receipt = ReceiptModel(
         date=receipt_data["date"],
@@ -816,7 +833,7 @@ async def create_transaction_from_data(
         amount=receipt_data["amount"],
         store_name=receipt_data["store_name"],
         description=receipt_data["description"],
-        category=receipt_data["category"],
+        category=clean_category,
         budget=clean_budget,
         transaction_type=tx_type,
         destination_account=dest_account or None,
@@ -845,7 +862,7 @@ async def create_transaction_from_data(
                 amount=split_amt,
                 store_name=receipt.store_name,
                 description=split_desc,
-                category=receipt.category,
+                category=clean_category,
                 budget=clean_budget,
             )
 
@@ -1035,9 +1052,9 @@ async def refine_csv_transactions_with_llm(
             + "\n\n"
             "Instructions:\n"
             "1. Apply the user's custom instructions to update fields that need changes (category, budget, store_name, or transaction_type).\n"
-            "2. If no budget applies or the user specifies no budget, set budget to null.\n"
+            "2. If no budget applies or the user specifies no budget, set budget to null. If no category applies or the user specifies no category, set category to null.\n"
             "3. If a transaction represents an ATM cash withdrawal or account transfer, set transaction_type to 'transfer' and destination_account to the target asset account (e.g. 'Cash wallet').\n"
-            "4. Return a JSON object with 'updates': a list of objects containing at minimum 'index' (int), 'category' (str), 'budget' (str or null), and optionally 'store_name', 'transaction_type', 'destination_account'."
+            "4. Return a JSON object with 'updates': a list of objects containing at minimum 'index' (int), 'category' (str or null), 'budget' (str or null), and optionally 'store_name', 'transaction_type', 'destination_account'."
         )
 
         try:
@@ -1100,8 +1117,15 @@ async def refine_csv_transactions_with_llm(
                         else up.get("destination_account")
                     )
 
-                    if up_cat:
-                        merged["category"] = up_cat.strip()
+                    if up_cat is not None:
+                        clean_c = (
+                            up_cat.strip() if isinstance(up_cat, str) else ""
+                        )
+                        merged["category"] = (
+                            ""
+                            if clean_c.lower() in ("none", "null")
+                            else clean_c
+                        )
                     if up_bud is not None:
                         clean_b = (
                             up_bud.strip() if isinstance(up_bud, str) else ""

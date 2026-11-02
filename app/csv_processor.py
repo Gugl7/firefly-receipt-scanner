@@ -529,7 +529,9 @@ def parse_csv_transactions(
                 if c.lower() == raw_cat.strip().lower():
                     chosen_cat = c
                     break
-        if not chosen_cat:
+            if not chosen_cat and raw_cat.strip().lower() not in ("none", "null"):
+                chosen_cat = raw_cat.strip()
+        elif "category" not in col_map:
             chosen_cat = guess_category(tx_store, tx_desc, categories)
 
         # Budget

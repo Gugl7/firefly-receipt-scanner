@@ -97,11 +97,15 @@
     </div>
     
     <div class="form-group">
-        <label for="category">Category:</label>
-        <select id="category" name="category" required>
-            {% for category in extracted_data.available_categories %}
+        <label for="category">Category (optional):</label>
+        <select id="category" name="category">
+            <option value="" {% if not extracted_data.category or extracted_data.category|lower in ['none', 'null', ''] %}selected{% endif %}>None (No category)</option>
+            {% for category in extracted_data.available_categories if category and category|lower not in ['none', 'null'] %}
             <option value="{{ category }}" {% if category == extracted_data.category %}selected{% endif %}>{{ category }}</option>
             {% endfor %}
+            {% if extracted_data.category and extracted_data.category|lower not in ['none', 'null', ''] and extracted_data.category not in extracted_data.available_categories %}
+            <option value="{{ extracted_data.category }}" selected>{{ extracted_data.category }}</option>
+            {% endif %}
         </select>
     </div>
     
@@ -112,6 +116,9 @@
             {% for budget in extracted_data.available_budgets if budget and budget|lower not in ['none', 'null'] %}
             <option value="{{ budget }}" {% if budget == extracted_data.budget %}selected{% endif %}>{{ budget }}</option>
             {% endfor %}
+            {% if extracted_data.budget and extracted_data.budget|lower not in ['none', 'null', ''] and extracted_data.budget not in extracted_data.available_budgets %}
+            <option value="{{ extracted_data.budget }}" selected>{{ extracted_data.budget }}</option>
+            {% endif %}
         </select>
     </div>
 

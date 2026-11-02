@@ -37,7 +37,7 @@ class ReceiptModel(BaseModel):
     amount: float
     store_name: str
     description: str
-    category: str
+    category: str | None = None
     budget: str | None = None
     payment_method: str | None = None
     card_last_four: str | None = None

@@ -491,7 +491,7 @@ async def create_transaction(
     amount: float = Form(...),
     store_name: str = Form(...),
     description: str = Form(...),
-    category: str = Form(...),
+    category: str = Form(""),
     budget: str = Form(""),
     source_account: str = Form(""),
     transaction_type: str = Form("withdrawal"),
@@ -588,6 +588,12 @@ async def create_transaction(
             if not source_account and parsed_splits:
                 source_account = parsed_splits[0]["account"]
 
+            clean_category = (
+                category.strip()
+                if category and category.strip().lower() not in ("none", "null")
+                else None
+            )
+
             clean_budget = (
                 budget.strip()
                 if budget and budget.strip().lower() not in ("none", "null")
@@ -600,7 +606,7 @@ async def create_transaction(
                 "amount": amount,
                 "store_name": store_name,
                 "description": description,
-                "category": category,
+                "category": clean_category or "",
                 "budget": clean_budget or "",
                 "source_account": source_account,
                 "transaction_type": transaction_type,
@@ -662,6 +668,12 @@ async def create_transaction(
             if not source_account and parsed_splits:
                 source_account = parsed_splits[0]["account"]
 
+            clean_category = (
+                category.strip()
+                if category and category.strip().lower() not in ("none", "null")
+                else None
+            )
+
             clean_budget = (
                 budget.strip()
                 if budget and budget.strip().lower() not in ("none", "null")
@@ -674,7 +686,7 @@ async def create_transaction(
                 "amount": amount,
                 "store_name": store_name,
                 "description": description,
-                "category": category,
+                "category": clean_category or "",
                 "budget": clean_budget or "",
                 "source_account": source_account,
                 "transaction_type": transaction_type,

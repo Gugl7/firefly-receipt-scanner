@@ -287,6 +287,13 @@ def create_firefly_transaction(
         if clean_b and clean_b.lower() not in ("none", "null", ""):
             budget_name = clean_b
 
+    raw_cat = getattr(receipt, "category", None)
+    category_name = None
+    if raw_cat:
+        clean_c = str(raw_cat).strip()
+        if clean_c and clean_c.lower() not in ("none", "null", ""):
+            category_name = clean_c
+
     tx_type = (
         transaction_type
         or getattr(receipt, "transaction_type", None)
@@ -312,7 +319,7 @@ def create_firefly_transaction(
             "description": receipt.description or f"Transfer to {effective_dest}",
             "source_name": source_account,
             "destination_name": effective_dest,
-            "category_name": receipt.category or None,
+            "category_name": category_name,
             "budget_name": None,  # Firefly III does not allow budgets on transfers
             "tags": tags if tags is not None else ["automated", "transfer"],
         }
@@ -324,7 +331,7 @@ def create_firefly_transaction(
             "description": receipt.description,
             "source_name": receipt.store_name,
             "destination_name": source_account,
-            "category_name": receipt.category or None,
+            "category_name": category_name,
             "budget_name": None,
             "tags": tags if tags is not None else ["automated", "deposit"],
         }
@@ -336,7 +343,7 @@ def create_firefly_transaction(
             "description": receipt.description,
             "destination_name": receipt.store_name,
             "source_name": source_account,
-            "category_name": receipt.category,
+            "category_name": category_name,
             "budget_name": budget_name,
             "tags": tags if tags is not None else ["automated"],
         }
