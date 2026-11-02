@@ -301,11 +301,26 @@ def test_batch_system_prompt_persistence():
     print("Batch system prompt persistence tests passed!")
 
 
+def test_csv_app_import_and_refinement():
+    print("Testing get_firefly_budgets availability in app/app.py...")
+    import ast
+    with open("app/app.py", "r", encoding="utf-8") as f:
+        tree = ast.parse(f.read())
+    imported_names = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module in ("firefly", ".firefly"):
+            for n in node.names:
+                imported_names.add(n.name)
+    assert "get_firefly_budgets" in imported_names
+    print("get_firefly_budgets is properly imported in app/app.py!")
+
+
 if __name__ == "__main__":
     test_build_extraction_prompt_system_prompt()
     test_extract_receipt_data_forwards_system_prompt()
     test_extract_receipt_data_from_text_forwards_system_prompt()
     test_refine_csv_transactions_with_llm()
     test_batch_system_prompt_persistence()
+    test_csv_app_import_and_refinement()
     print("\nAll system prompt tests passed successfully!")
 

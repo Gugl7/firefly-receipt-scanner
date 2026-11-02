@@ -29,6 +29,7 @@ from .csv_processor import parse_csv_transactions
 from .firefly import (
     check_duplicate_transactions,
     get_firefly_asset_accounts,
+    get_firefly_budgets,
     get_firefly_categories,
 )
 from .image_utils import (
