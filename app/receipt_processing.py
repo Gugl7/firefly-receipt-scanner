@@ -354,13 +354,26 @@ async def _extract_with_router(
 
 
 def build_extraction_prompt(
-    categories: list[str], budgets: list[str], receipt_text: str | None = None
+    categories: list[str],
+    budgets: list[str],
+    receipt_text: str | None = None,
+    system_prompt: str | None = None,
 ) -> str:
     today_str = datetime.now().strftime("%Y-%m-%d")
 
+    custom_instructions = ""
+    if system_prompt and system_prompt.strip():
+        custom_instructions = (
+            "--- USER CUSTOM INSTRUCTIONS / SYSTEM PROMPT ---\n"
+            f"{system_prompt.strip()}\n"
+            "Pay close attention to these instructions and follow them when extracting the transaction details.\n"
+            "------------------------------------------------\n\n"
+        )
+
     if receipt_text:
         prompt = (
-            "Please analyze the provided text and extract all transactions found in it.\n"
+            custom_instructions
+            + "Please analyze the provided text and extract all transactions found in it.\n"
             "The text may contain a SINGLE transaction or MULTIPLE distinct transactions (e.g. an expense list, multiple receipts, or pasted statement lines).\n"
             "For each transaction found, extract the following details:\n"
             "1) amount (receipt total amount as a number)\n"
@@ -412,7 +425,8 @@ def build_extraction_prompt(
 
     target_desc = "the attached receipt image"
     prompt = (
-        f"Please analyze {target_desc} and extract the following details:\n"
+        custom_instructions
+        + f"Please analyze {target_desc} and extract the following details:\n"
         "1) amount (receipt total amount as a number)\n"
         "2) category (choose the best matching category from: "
         + ", ".join(categories)
@@ -508,7 +522,10 @@ async def _run_llm_extraction(
         raise e
 
 
-async def extract_receipt_data_from_text(receipt_text: str) -> list[dict]:
+async def extract_receipt_data_from_text(
+    receipt_text: str,
+    system_prompt: str | None = None,
+) -> list[dict]:
     """Extract receipt data from text without an image, supporting single or multiple transactions."""
     try:
         print("Processing receipt from text input...")
@@ -530,7 +547,9 @@ async def extract_receipt_data_from_text(receipt_text: str) -> list[dict]:
             budgets = ["Monthly", "Weekly", "Other"]
             print("Using default budgets due to Firefly III connection issues")
 
-        prompt = build_extraction_prompt(categories, budgets, receipt_text=receipt_text)
+        prompt = build_extraction_prompt(
+            categories, budgets, receipt_text=receipt_text, system_prompt=system_prompt
+        )
         result = await _run_llm_extraction(
             prompt, image=None, image_base64=None, response_model=MultiReceiptModel
         )
@@ -617,7 +636,9 @@ async def extract_receipt_data_from_text(receipt_text: str) -> list[dict]:
 
 
 async def extract_receipt_data(
-    file: UploadFile | bytes, filename: str | None = None
+    file: UploadFile | bytes,
+    filename: str | None = None,
+    system_prompt: str | None = None,
 ):
     """Extract data from the receipt image without creating a transaction."""
     try:
@@ -674,7 +695,7 @@ async def extract_receipt_data(
             budgets = ["Monthly", "Weekly", "Other"]
             print("Using default budgets due to Firefly III connection issues")
 
-        prompt = build_extraction_prompt(categories, budgets)
+        prompt = build_extraction_prompt(categories, budgets, system_prompt=system_prompt)
         receipt = await _run_llm_extraction(
             prompt, image=image, image_base64=image_base64
         )
@@ -912,3 +933,155 @@ async def create_transaction_from_data(
     error_msg = f"Failed to create transaction after {max_retries} attempts. Last error: {last_error}"
     print(error_msg)
     return error_msg
+
+
+async def refine_csv_transactions_with_llm(
+    transactions: list[dict],
+    system_prompt: str,
+    categories: list[str] | None = None,
+    budgets: list[str] | None = None,
+    asset_accounts: list[str] | None = None,
+) -> list[dict]:
+    """Use LLM with custom system prompt to refine, categorize, or correct CSV-parsed transactions."""
+    if not system_prompt or not system_prompt.strip() or not transactions:
+        return transactions
+
+    clean_sp = system_prompt.strip()
+    if categories is None:
+        categories = get_firefly_categories() or [
+            "Groceries",
+            "Dining",
+            "Shopping",
+            "Transportation",
+            "Entertainment",
+            "Other",
+        ]
+    if budgets is None:
+        budgets = get_firefly_budgets() or ["Monthly", "Weekly", "Other"]
+
+    print(
+        f"Refining {len(transactions)} CSV transaction(s) using LLM with system prompt: '{clean_sp[:80]}...'"
+    )
+
+    chunk_size = 25
+    refined_transactions = []
+
+    for i in range(0, len(transactions), chunk_size):
+        chunk = transactions[i : i + chunk_size]
+        chunk_items = []
+        for idx, tx in enumerate(chunk):
+            chunk_items.append({
+                "index": idx,
+                "date": tx.get("date", ""),
+                "time": tx.get("time", ""),
+                "amount": tx.get("amount", 0.0),
+                "store_name": tx.get("store_name", ""),
+                "description": tx.get("description", ""),
+                "category": tx.get("category", ""),
+                "budget": tx.get("budget", ""),
+                "payment_method": tx.get("payment_method", ""),
+                "card_last_four": tx.get("card_last_four", ""),
+                "source_account": tx.get("source_account", ""),
+                "transaction_type": tx.get("transaction_type", "withdrawal"),
+                "destination_account": tx.get("destination_account", ""),
+            })
+
+        prompt = (
+            "--- USER CUSTOM INSTRUCTIONS / SYSTEM PROMPT ---\n"
+            f"{clean_sp}\n"
+            "Pay close attention to the instructions above and follow them to review, refine, categorize, or correct the transactions.\n"
+            "------------------------------------------------\n\n"
+            "We parsed candidate transactions from a bank/expense CSV export:\n"
+            f"{json.dumps(chunk_items, indent=2, ensure_ascii=False)}\n\n"
+            "Available Firefly III Categories: "
+            + ", ".join(categories)
+            + "\n"
+            "Available Firefly III Budgets: "
+            + (", ".join(budgets) if budgets else "None")
+            + "\n"
+            "Available Firefly III Asset Accounts: "
+            + (", ".join(asset_accounts) if asset_accounts else "None")
+            + "\n\n"
+            "Instructions:\n"
+            "1. Apply the user's custom instructions to update/refine the transactions (e.g. adjust categories, budgets, merchant names, payment methods, card digits, or detect transfers).\n"
+            "2. Keep the date and amount accurate unless the user specifically instructed a modification.\n"
+            "3. If a budget was not assigned or does not apply, set budget to null.\n"
+            "4. Return a JSON object with a 'transactions' array containing the refined transactions matching this schema:\n"
+            "{\n"
+            '  "transactions": [\n'
+            "    {\n"
+            '      "date": "YYYY-MM-DD",\n'
+            '      "time": "HH:MM or null",\n'
+            '      "amount": 0.0,\n'
+            '      "store_name": "string",\n'
+            '      "description": "string",\n'
+            '      "category": "string",\n'
+            '      "budget": "string | null",\n'
+            '      "payment_method": "card | cash | split | other | null",\n'
+            '      "card_last_four": "1234 | null",\n'
+            '      "transaction_type": "withdrawal | transfer | deposit",\n'
+            '      "destination_account": "string | null",\n'
+            '      "is_split_payment": false,\n'
+            '      "splits": []\n'
+            "    }\n"
+            "  ]\n"
+            "}"
+        )
+
+        try:
+            result = await _run_llm_extraction(
+                prompt, image=None, image_base64=None, response_model=MultiReceiptModel
+            )
+            llm_txs: list[ReceiptModel] = []
+            if isinstance(result, MultiReceiptModel):
+                llm_txs = result.transactions
+            elif isinstance(result, ReceiptModel):
+                llm_txs = [result]
+            elif isinstance(result, list):
+                llm_txs = result
+
+            if len(llm_txs) == len(chunk):
+                for orig_tx, refined_rm in zip(chunk, llm_txs):
+                    merged = dict(orig_tx)
+                    if refined_rm.store_name and refined_rm.store_name != "Unknown Store":
+                        merged["store_name"] = refined_rm.store_name
+                    if refined_rm.category:
+                        merged["category"] = refined_rm.category
+                    if refined_rm.budget is not None:
+                        clean_b = refined_rm.budget.strip()
+                        merged["budget"] = "" if clean_b.lower() in ("none", "null") else clean_b
+                    else:
+                        merged["budget"] = ""
+                    if refined_rm.description:
+                        merged["description"] = refined_rm.description
+                    if refined_rm.payment_method:
+                        merged["payment_method"] = refined_rm.payment_method.strip().lower()
+                    if refined_rm.card_last_four:
+                        clean_c = clean_card_digits(refined_rm.card_last_four)
+                        if clean_c:
+                            merged["card_last_four"] = clean_c
+                    if getattr(refined_rm, "transaction_type", None):
+                        merged["transaction_type"] = refined_rm.transaction_type.strip().lower()
+                    if getattr(refined_rm, "destination_account", None):
+                        merged["destination_account"] = refined_rm.destination_account.strip()
+                    if getattr(refined_rm, "is_split_payment", False):
+                        merged["is_split_payment"] = True
+                        merged["splits"] = [
+                            {
+                                "payment_method": getattr(sp, "payment_method", "") or "",
+                                "amount": getattr(sp, "amount", 0.0) or 0.0,
+                                "card_last_four": clean_card_digits(getattr(sp, "card_last_four", None)) or "",
+                            }
+                            for sp in (getattr(refined_rm, "splits", None) or [])
+                        ]
+                    refined_transactions.append(merged)
+            else:
+                print(
+                    f"Warning: LLM returned {len(llm_txs)} items for chunk of {len(chunk)}, using deterministic items."
+                )
+                refined_transactions.extend(chunk)
+        except Exception as e:
+            print(f"Warning: LLM refinement of CSV chunk failed ({e}), using deterministic items.")
+            refined_transactions.extend(chunk)
+
+    return refined_transactions

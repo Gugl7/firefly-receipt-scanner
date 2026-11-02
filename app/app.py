@@ -40,6 +40,7 @@ from .receipt_processing import (
     create_transaction_from_data,
     extract_receipt_data,
     extract_receipt_data_from_text,
+    refine_csv_transactions_with_llm,
 )
 
 # In-memory submission cache to prevent double-click / rapid re-submit duplicates
@@ -148,6 +149,9 @@ async def extract_receipt(
     receipt_text: str = Form(default=""),
     csv_file: UploadFile | None = File(default=None),
     csv_source_account: str = Form(default=""),
+    system_prompt: str = Form(default=""),
+    csv_system_prompt: str = Form(default=""),
+    text_system_prompt: str = Form(default=""),
 ):
     try:
         cleanup_old_batches()
@@ -163,8 +167,11 @@ async def extract_receipt(
         # 1. Check if receipt text was submitted (Text mode)
         cleaned_text = receipt_text.strip() if receipt_text else ""
         if cleaned_text:
+            text_prompt = (text_system_prompt or system_prompt or "").strip()
             print("Processing receipt from text input...")
-            extracted_txs = await extract_receipt_data_from_text(cleaned_text)
+            extracted_txs = await extract_receipt_data_from_text(
+                cleaned_text, system_prompt=text_prompt
+            )
             if not isinstance(extracted_txs, list):
                 extracted_txs = [extracted_txs]
 
@@ -281,11 +288,37 @@ async def extract_receipt(
                 else chosen_account
             )
 
+            csv_prompt = (csv_system_prompt or system_prompt or "").strip()
+
             parsed_txs = parse_csv_transactions(
                 csv_bytes,
                 default_account=effective_account,
                 asset_accounts=asset_accounts,
             )
+
+            # If deterministic parser found 0 transactions and a prompt was provided, try LLM fallback on raw CSV text
+            if not parsed_txs and csv_prompt:
+                print("Deterministic CSV parsing found 0 rows. Attempting LLM extraction from CSV text...")
+                from .csv_processor import decode_csv_bytes
+                csv_text = decode_csv_bytes(csv_bytes)
+                extracted_txs = await extract_receipt_data_from_text(
+                    csv_text, system_prompt=csv_prompt
+                )
+                if extracted_txs:
+                    parsed_txs = [
+                        enrich_extracted_data_accounts(tx, asset_accounts, effective_account)
+                        for tx in extracted_txs
+                    ]
+
+            # If transactions were found and a custom prompt was provided, refine them using the LLM
+            if parsed_txs and csv_prompt:
+                parsed_txs = await refine_csv_transactions_with_llm(
+                    parsed_txs,
+                    system_prompt=csv_prompt,
+                    categories=get_firefly_categories(),
+                    budgets=get_firefly_budgets(),
+                    asset_accounts=asset_accounts,
+                )
 
             if not parsed_txs:
                 return templates.TemplateResponse(
@@ -305,6 +338,10 @@ async def extract_receipt(
 
             with open(os.path.join(batch_dir, "batch_type.txt"), "w") as f_type:
                 f_type.write("csv")
+
+            if csv_prompt:
+                with open(os.path.join(batch_dir, "system_prompt.txt"), "w", encoding="utf-8") as f_sp:
+                    f_sp.write(csv_prompt)
 
             for idx, tx_data in enumerate(parsed_txs):
                 target_json = os.path.join(batch_dir, f"{idx}.json")
@@ -377,13 +414,18 @@ async def extract_receipt(
                 },
             )
 
+        files_prompt = (system_prompt or csv_system_prompt or text_system_prompt or "").strip()
+        if files_prompt:
+            with open(os.path.join(batch_dir, "system_prompt.txt"), "w", encoding="utf-8") as f_sp:
+                f_sp.write(files_prompt)
+
         print(
             f"Created batch {batch_id} with {valid_count} receipts. Processing receipt 1 of {valid_count}..."
         )
 
         # Process the first image
         extracted_data = await extract_receipt_data(
-            first_bytes, filename=first_filename or "receipt_1.jpg"
+            first_bytes, filename=first_filename or "receipt_1.jpg", system_prompt=files_prompt
         )
         extracted_data = enrich_extracted_data_accounts(
             extracted_data, asset_accounts, source_account
@@ -637,6 +679,15 @@ async def create_transaction(
             # 2. Process all remaining items in the batch
             if batch_id:
                 batch_dir = os.path.join(tempfile.gettempdir(), "receipt_scanner", batch_id)
+                batch_prompt = ""
+                sp_p = os.path.join(batch_dir, "system_prompt.txt")
+                if os.path.exists(sp_p):
+                    try:
+                        with open(sp_p, "r", encoding="utf-8") as f_sp:
+                            batch_prompt = f_sp.read().strip()
+                    except Exception:
+                        pass
+
                 for rem_idx in range(current_index + 1, batch_total):
                     json_p = os.path.join(batch_dir, f"{rem_idx}.json")
                     dat_p = os.path.join(batch_dir, f"{rem_idx}.dat")
@@ -658,7 +709,9 @@ async def create_transaction(
                             if os.path.exists(name_p):
                                 with open(name_p, "r", encoding="utf-8") as f_n:
                                     item_fname = f_n.read().strip() or item_fname
-                            item_data = await extract_receipt_data(item_bytes, filename=item_fname)
+                            item_data = await extract_receipt_data(
+                                item_bytes, filename=item_fname, system_prompt=batch_prompt
+                            )
                         except Exception as e:
                             print(f"Error extracting data for item {rem_idx + 1}: {e}")
 
@@ -764,8 +817,19 @@ async def create_transaction(
                         with open(name_path, "r") as f_name:
                             next_filename = f_name.read().strip() or None
 
+                    batch_prompt = ""
+                    sp_p = os.path.join(batch_dir, "system_prompt.txt")
+                    if os.path.exists(sp_p):
+                        try:
+                            with open(sp_p, "r", encoding="utf-8") as f_sp:
+                                batch_prompt = f_sp.read().strip()
+                        except Exception:
+                            pass
+
                     next_extracted_data = await extract_receipt_data(
-                        next_bytes, filename=next_filename or f"receipt_{next_index + 1}.jpg"
+                        next_bytes,
+                        filename=next_filename or f"receipt_{next_index + 1}.jpg",
+                        system_prompt=batch_prompt,
                     )
                     asset_accounts = get_firefly_asset_accounts() or [source_account]
                     next_extracted_data = enrich_extracted_data_accounts(

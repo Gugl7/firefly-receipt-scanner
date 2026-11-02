@@ -21,6 +21,12 @@
             <div id="file-count-badge" class="file-count-badge" style="display: none;"></div>
         </div>
 
+        <div class="form-group">
+            <label for="system_prompt">Custom LLM Instructions / System Prompt (Optional):</label>
+            <textarea id="system_prompt" name="system_prompt" rows="2" placeholder="e.g. Focus on handwritten tip, dates are DD/MM/YYYY, store name is near the logo, split 50 cash 20 card..."></textarea>
+            <small class="helper-text">Special instructions forwarded to the AI model so it knows what to pay closer attention to when extracting your receipt(s).</small>
+        </div>
+
         <button type="submit" id="submit-btn" class="btn">Extract Receipt Data</button>
     </div>
 
@@ -43,6 +49,12 @@
             <small class="helper-text">Used for rows where no card or account mapping is detected.</small>
         </div>
 
+        <div class="form-group">
+            <label for="csv_system_prompt">Custom LLM Instructions / System Prompt (Optional):</label>
+            <textarea id="csv_system_prompt" name="csv_system_prompt" rows="2" placeholder="e.g. Categorize Shell as Fuel with Car budget, ATM withdrawals are transfers to Cash wallet, column 3 has merchant name..."></textarea>
+            <small class="helper-text">Special instructions forwarded to the AI model to refine categories, budgets, merchants, or account mappings from your CSV.</small>
+        </div>
+
         <button type="submit" id="submit-csv-btn" class="btn">Import CSV Transactions</button>
     </div>
 
@@ -52,6 +64,12 @@
             <label for="receipt_text">Paste Receipt(s) or Transaction Details:</label>
             <textarea id="receipt_text" name="receipt_text" rows="9" placeholder="Paste one or multiple receipts, expense notes, or transaction emails here...&#10;&#10;e.g. Single receipt:&#10;Store: Target&#10;Date: 2026-10-25&#10;Total: $42.50&#10;Items: Groceries (Milk, Bread)&#10;&#10;Or multiple transactions:&#10;1) 2026-10-26 Billa EUR 18.90 Groceries (paid with card ..1234)&#10;2) 2026-10-26 Shell Gas Station EUR 65.00 Fuel&#10;3) 2026-10-27 Coffee Shop EUR 4.80 Coffee Cash"></textarea>
             <small class="helper-text">Paste text for a single receipt or multiple transactions (e.g. email receipts, SMS alerts, expense lists). Multiple transactions will be parsed into a batch for sequential review.</small>
+        </div>
+
+        <div class="form-group">
+            <label for="text_system_prompt">Custom LLM Instructions / System Prompt (Optional):</label>
+            <textarea id="text_system_prompt" name="text_system_prompt" rows="2" placeholder="e.g. Focus on merchant name, set budget to Monthly for all items..."></textarea>
+            <small class="helper-text">Special instructions forwarded to the AI model during extraction.</small>
         </div>
 
         <button type="submit" id="submit-text-btn" class="btn">Extract From Text</button>
