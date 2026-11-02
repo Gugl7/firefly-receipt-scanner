@@ -43,6 +43,8 @@ class ReceiptModel(BaseModel):
     card_last_four: str | None = None
     is_split_payment: bool = False
     splits: list[PaymentSplit] = []
+    transaction_type: str = "withdrawal"
+    destination_account: str | None = None
 
     @_validator_dec
     @classmethod

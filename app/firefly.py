@@ -203,8 +203,31 @@ def check_duplicate_transactions(
 
 
 def create_firefly_transaction(
-    receipt, source_account="Cash wallet", tags: list[str] | None = None
+    receipt,
+    source_account="Cash wallet",
+    tags: list[str] | None = None,
+    transaction_type: str | None = None,
+    destination_account: str | None = None,
 ):
+    tx_type = (
+        transaction_type
+        or getattr(receipt, "transaction_type", None)
+        or "withdrawal"
+    ).strip().lower()
+
+    dest_acc = (
+        destination_account
+        or getattr(receipt, "destination_account", None)
+        or ""
+    ).strip()
+
+    if tx_type == "transfer":
+        effective_dest = dest_acc or getattr(receipt, "store_name", "")
+        if effective_dest.strip().lower() == source_account.strip().lower():
+            raise ValueError(
+                f"Source and destination accounts cannot be the same for a transfer ({source_account})."
+            )
+
     settings = get_settings()
     url = urljoin(settings.firefly_api_url, "transactions")
     headers = {
@@ -264,21 +287,61 @@ def create_firefly_transaction(
         if clean_b and clean_b.lower() not in ("none", "null", ""):
             budget_name = clean_b
 
-    payload = {
-        "transactions": [
-            {
-                "type": "withdrawal",
-                "date": formatted_date,
-                "amount": str(receipt.amount),
-                "description": receipt.description,
-                "destination_name": receipt.store_name,
-                "source_name": source_account,
-                "category_name": receipt.category,
-                "budget_name": budget_name,
-                "tags": tags if tags is not None else ["automated"],
-            }
-        ]
-    }
+    tx_type = (
+        transaction_type
+        or getattr(receipt, "transaction_type", None)
+        or "withdrawal"
+    ).strip().lower()
+
+    dest_acc = (
+        destination_account
+        or getattr(receipt, "destination_account", None)
+        or ""
+    ).strip()
+
+    if tx_type == "transfer":
+        effective_dest = dest_acc or receipt.store_name
+        if effective_dest.strip().lower() == source_account.strip().lower():
+            raise ValueError(
+                f"Source and destination accounts cannot be the same for a transfer ({source_account})."
+            )
+        tx_data = {
+            "type": "transfer",
+            "date": formatted_date,
+            "amount": str(receipt.amount),
+            "description": receipt.description or f"Transfer to {effective_dest}",
+            "source_name": source_account,
+            "destination_name": effective_dest,
+            "category_name": receipt.category or None,
+            "budget_name": None,  # Firefly III does not allow budgets on transfers
+            "tags": tags if tags is not None else ["automated", "transfer"],
+        }
+    elif tx_type == "deposit":
+        tx_data = {
+            "type": "deposit",
+            "date": formatted_date,
+            "amount": str(receipt.amount),
+            "description": receipt.description,
+            "source_name": receipt.store_name,
+            "destination_name": source_account,
+            "category_name": receipt.category or None,
+            "budget_name": None,
+            "tags": tags if tags is not None else ["automated", "deposit"],
+        }
+    else:  # withdrawal
+        tx_data = {
+            "type": "withdrawal",
+            "date": formatted_date,
+            "amount": str(receipt.amount),
+            "description": receipt.description,
+            "destination_name": receipt.store_name,
+            "source_name": source_account,
+            "category_name": receipt.category,
+            "budget_name": budget_name,
+            "tags": tags if tags is not None else ["automated"],
+        }
+
+    payload = {"transactions": [tx_data]}
 
     try:
         print(f"Sending transaction to Firefly III: {json.dumps(payload, indent=2)}")

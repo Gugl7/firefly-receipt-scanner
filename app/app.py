@@ -435,6 +435,8 @@ async def create_transaction(
     category: str = Form(...),
     budget: str = Form(""),
     source_account: str = Form(""),
+    transaction_type: str = Form("withdrawal"),
+    destination_account: str = Form(""),
     attach_receipt: str = Form(""),
     image_base64: str = Form(""),
     original_filename: str = Form(""),
@@ -542,6 +544,8 @@ async def create_transaction(
                 "category": category,
                 "budget": clean_budget or "",
                 "source_account": source_account,
+                "transaction_type": transaction_type,
+                "destination_account": destination_account,
             }
             if len(parsed_splits) >= 2:
                 receipt_payload["splits"] = parsed_splits
@@ -614,6 +618,8 @@ async def create_transaction(
                 "category": category,
                 "budget": clean_budget or "",
                 "source_account": source_account,
+                "transaction_type": transaction_type,
+                "destination_account": destination_account,
             }
             if len(parsed_splits) >= 2:
                 receipt_payload["splits"] = parsed_splits

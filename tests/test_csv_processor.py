@@ -4,10 +4,13 @@ from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-# Mock dependencies if not installed in host python
-for mod in ["app.config", "fastapi", "google", "google.genai", "httpx"]:
-    if mod not in sys.modules:
-        sys.modules[mod] = MagicMock()
+# Mock external dependencies if not installed in host python
+for mod in ["fastapi", "google", "google.genai", "httpx"]:
+    try:
+        __import__(mod)
+    except (ImportError, AttributeError):
+        if mod not in sys.modules:
+            sys.modules[mod] = MagicMock()
 
 from app.csv_processor import (
     clean_store_and_description,

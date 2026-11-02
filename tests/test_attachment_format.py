@@ -6,10 +6,13 @@ from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-# Mock dependencies if not installed in host python
-for mod in ["app.config", "fastapi", "google", "google.genai", "httpx"]:
-    if mod not in sys.modules:
-        sys.modules[mod] = MagicMock()
+# Mock external dependencies if not installed in host python
+for mod in ["fastapi", "google", "google.genai", "httpx"]:
+    try:
+        __import__(mod)
+    except (ImportError, AttributeError):
+        if mod not in sys.modules:
+            sys.modules[mod] = MagicMock()
 
 from app.image_utils import (
     build_attachment_filename,
@@ -91,7 +94,7 @@ def test_create_transaction_from_data_pdf_attachment():
 
     attached_calls = []
 
-    def mock_create_firefly_transaction(receipt, source_account, tags=None):
+    def mock_create_firefly_transaction(receipt, source_account, tags=None, **kwargs):
         return {
             "data": {
                 "id": "123",
@@ -149,7 +152,7 @@ def test_split_payment_pdf_attachment():
 
     attached_calls = []
 
-    def mock_create_firefly_transaction(receipt, source_account, tags=None):
+    def mock_create_firefly_transaction(receipt, source_account, tags=None, **kwargs):
         tx_id = f"tx_{len(attached_calls) + 1}"
         journal_id = 700 + len(attached_calls)
         return {

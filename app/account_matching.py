@@ -199,6 +199,76 @@ def match_account_for_receipt(
     return None, None
 
 
+def find_cash_account(asset_accounts: list[str]) -> str | None:
+    """Find a cash asset account from the list of asset accounts."""
+    if not asset_accounts:
+        return None
+    mappings = load_account_mappings()
+    # Check explicit mapping for cash
+    for k in ["cash", "bar", "bargeld"]:
+        if k in mappings:
+            for acc in asset_accounts:
+                if acc.lower() == mappings[k].lower():
+                    return acc
+    # Look for account containing 'cash', 'bar', 'bargeld', 'geldbörse', 'brieftasche'
+    for acc in asset_accounts:
+        acc_lower = acc.lower()
+        if any(w in acc_lower for w in ["cash", "bargeld", "barge", "geldbörse", "brieftasche"]):
+            return acc
+    return None
+
+
+def detect_transfer_type(
+    store_name: str,
+    description: str,
+    source_account: str,
+    asset_accounts: list[str],
+) -> tuple[str, str | None, str | None]:
+    """
+    Detect if a transaction is a transfer (e.g. ATM withdrawal or account-to-account transfer).
+
+    Returns:
+        (transaction_type, destination_account, reason)
+    """
+    text = f"{store_name or ''} {description or ''}".lower()
+    cash_acc = find_cash_account(asset_accounts) or (
+        "Cash wallet" if "Cash wallet" in asset_accounts else None
+    )
+
+    # 1. Check for ATM cash withdrawal keywords
+    atm_keywords = [
+        "atm",
+        "bankomat",
+        "geldautomat",
+        "bargeldbehebung",
+        "bargeldauszahlung",
+        "bargeldabhebung",
+        "cash withdrawal",
+        "behebung",
+    ]
+    if any(k in text for k in atm_keywords):
+        target_cash = cash_acc or (asset_accounts[0] if asset_accounts else "Cash wallet")
+        if source_account.lower() != target_cash.lower():
+            return "transfer", target_cash, f"ATM cash withdrawal detected (Transfer to {target_cash})"
+
+    # 2. Check if text explicitly matches another asset account (internal transfer)
+    for acc in asset_accounts:
+        if acc.lower() == source_account.lower():
+            continue
+        acc_clean = acc.lower().strip()
+        if len(acc_clean) >= 4 and acc_clean in text:
+            return "transfer", acc, f"Transfer to {acc} detected"
+
+    # 3. Check for general transfer keywords
+    transfer_keywords = ["übertrag", "eigenübertrag", "umbuchung", "internal transfer"]
+    if any(k in text for k in transfer_keywords):
+        for acc in asset_accounts:
+            if acc.lower() != source_account.lower():
+                return "transfer", acc, f"Internal transfer detected (To {acc})"
+
+    return "withdrawal", None, None
+
+
 def enrich_extracted_data_accounts(
     extracted_data: dict,
     asset_accounts: list[str],
@@ -224,6 +294,35 @@ def enrich_extracted_data_accounts(
     extracted_data["account_match_reason"] = match_reason
     extracted_data["detected_card"] = extracted_data.get("card_last_four")
     extracted_data["detected_payment_method"] = extracted_data.get("payment_method")
+
+    # Detect transfers (e.g. ATM withdrawals or transfers between accounts)
+    tx_type = extracted_data.get("transaction_type") or "withdrawal"
+    dest_acc = extracted_data.get("destination_account")
+
+    if tx_type != "transfer" and not dest_acc:
+        detected_type, detected_dest, transfer_reason = detect_transfer_type(
+            extracted_data.get("store_name", ""),
+            extracted_data.get("description", ""),
+            chosen_account,
+            asset_accounts,
+        )
+        if detected_type == "transfer":
+            tx_type = "transfer"
+            dest_acc = detected_dest
+            if transfer_reason:
+                extracted_data["account_match_reason"] = transfer_reason
+
+    # Ensure destination_account is populated when transfer is selected
+    if tx_type == "transfer" and not dest_acc:
+        dest_acc = find_cash_account(asset_accounts)
+        if not dest_acc or dest_acc.lower() == chosen_account.lower():
+            for acc in asset_accounts:
+                if acc.lower() != chosen_account.lower():
+                    dest_acc = acc
+                    break
+
+    extracted_data["transaction_type"] = tx_type
+    extracted_data["destination_account"] = dest_acc or ""
 
     # Enrich split accounts if splits exist
     splits = extracted_data.get("splits") or []

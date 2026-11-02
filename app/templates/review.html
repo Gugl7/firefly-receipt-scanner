@@ -76,9 +76,18 @@
         <label for="amount">Amount:</label>
         <input type="number" id="amount" name="amount" value="{{ extracted_data.amount }}" step="0.01" required>
     </div>
-    
+
     <div class="form-group">
-        <label for="store_name">Store Name:</label>
+        <label for="transaction_type">Transaction Type:</label>
+        <select id="transaction_type" name="transaction_type" onchange="updateTransactionTypeView()">
+            <option value="withdrawal" {% if not extracted_data.transaction_type or extracted_data.transaction_type == 'withdrawal' %}selected{% endif %}>💸 Withdrawal (Expense)</option>
+            <option value="transfer" {% if extracted_data.transaction_type == 'transfer' %}selected{% endif %}>🔄 Transfer (Between Accounts)</option>
+            <option value="deposit" {% if extracted_data.transaction_type == 'deposit' %}selected{% endif %}>💰 Deposit (Income)</option>
+        </select>
+    </div>
+    
+    <div class="form-group" id="store-group">
+        <label for="store_name" id="store_name_label">Store Name:</label>
         <input type="text" id="store_name" name="store_name" value="{{ extracted_data.store_name }}" required>
     </div>
     
@@ -96,7 +105,7 @@
         </select>
     </div>
     
-    <div class="form-group">
+    <div class="form-group" id="budget-group" style="{% if extracted_data.transaction_type == 'transfer' %}display: none;{% endif %}">
         <label for="budget">Budget (optional):</label>
         <select id="budget" name="budget">
             <option value="" {% if not extracted_data.budget or extracted_data.budget|lower in ['none', 'null', ''] %}selected{% endif %}>None (No budget)</option>
@@ -108,10 +117,10 @@
 
     <div class="form-group" id="single-account-group" style="{% if extracted_data.is_split_payment %}display: none;{% endif %}">
         <div class="label-with-badge">
-            <label for="source_account">Source Account:</label>
+            <label for="source_account" id="source_account_label">Source Account:</label>
             {% if extracted_data.account_match_reason %}
             <span class="account-detected-badge" title="{{ extracted_data.account_match_reason }}">
-                {% if extracted_data.detected_payment_method == 'cash' %}💵{% else %}💳{% endif %}
+                {% if extracted_data.transaction_type == 'transfer' %}🔄{% elif extracted_data.detected_payment_method == 'cash' %}💵{% else %}💳{% endif %}
                 {{ extracted_data.account_match_reason }} (Auto-selected)
             </span>
             {% endif %}
@@ -125,7 +134,9 @@
         </select>
         {% if extracted_data.account_match_reason %}
         <small class="helper-text account-detected-hint">
-            {% if extracted_data.detected_card %}
+            {% if extracted_data.transaction_type == 'transfer' %}
+            Detected transfer — <strong>{{ extracted_data.source_account }}</strong> will be the sending account.
+            {% elif extracted_data.detected_card %}
             Detected card <strong>*{{ extracted_data.detected_card }}</strong> on receipt — pre-selected <strong>{{ extracted_data.recommended_account }}</strong> based on your account mapping.
             {% else %}
             Detected cash payment on receipt — pre-selected <strong>{{ extracted_data.recommended_account }}</strong>.
@@ -134,8 +145,20 @@
         {% endif %}
     </div>
 
+    <div class="form-group" id="destination-account-group" style="{% if extracted_data.transaction_type != 'transfer' %}display: none;{% endif %}">
+        <label for="destination_account">Destination Account (To):</label>
+        <select id="destination_account" name="destination_account">
+            {% for account in asset_accounts %}
+            <option value="{{ account }}" {% if account == extracted_data.destination_account %}selected{% endif %}>
+                {{ account }}
+            </option>
+            {% endfor %}
+        </select>
+        <small class="helper-text">Select the receiving asset account for this transfer (e.g. Cash wallet for ATM withdrawals, or Savings).</small>
+    </div>
+
     <!-- Split Payment Toggle -->
-    <div class="form-group split-toggle-container">
+    <div class="form-group split-toggle-container" id="split-toggle-container" style="{% if extracted_data.transaction_type == 'transfer' %}display: none;{% endif %}">
         <label class="checkbox-label">
             <input type="checkbox" id="split_payment_checkbox" {% if extracted_data.is_split_payment %}checked{% endif %} onchange="toggleSplitPayment(this.checked)">
             <span>✂️ <strong>Split Payment</strong> (paid with multiple accounts / cash &amp; card)</span>
@@ -222,6 +245,50 @@
     const assetAccounts = {{ asset_accounts | tojson | safe }};
     const initialSplits = {{ (extracted_data.splits or []) | tojson | safe }};
     let isSplitActive = {{ 'true' if extracted_data.is_split_payment else 'false' }};
+
+    function updateTransactionTypeView() {
+        const typeSelect = document.getElementById('transaction_type');
+        const type = typeSelect ? typeSelect.value : 'withdrawal';
+        const destGroup = document.getElementById('destination-account-group');
+        const budgetGroup = document.getElementById('budget-group');
+        const storeLabel = document.getElementById('store_name_label');
+        const storeInput = document.getElementById('store_name');
+        const splitToggle = document.getElementById('split-toggle-container');
+        const sourceLabel = document.getElementById('source_account_label');
+
+        if (type === 'transfer') {
+            if (destGroup) destGroup.style.display = 'block';
+            if (budgetGroup) budgetGroup.style.display = 'none';
+            if (splitToggle) splitToggle.style.display = 'none';
+            if (storeLabel) storeLabel.textContent = 'Transfer Reference / Description:';
+            if (storeInput) storeInput.required = false;
+            if (sourceLabel) sourceLabel.textContent = 'Source Account (From):';
+            if (isSplitActive) {
+                const box = document.getElementById('split_payment_checkbox');
+                if (box) box.checked = false;
+                toggleSplitPayment(false);
+            }
+        } else if (type === 'deposit') {
+            if (destGroup) destGroup.style.display = 'none';
+            if (budgetGroup) budgetGroup.style.display = 'none';
+            if (splitToggle) splitToggle.style.display = 'none';
+            if (storeLabel) storeLabel.textContent = 'Payer / Source (e.g. Employer):';
+            if (storeInput) storeInput.required = true;
+            if (sourceLabel) sourceLabel.textContent = 'Destination Account (Receiving):';
+            if (isSplitActive) {
+                const box = document.getElementById('split_payment_checkbox');
+                if (box) box.checked = false;
+                toggleSplitPayment(false);
+            }
+        } else { // withdrawal
+            if (destGroup) destGroup.style.display = 'none';
+            if (budgetGroup) budgetGroup.style.display = 'block';
+            if (splitToggle) splitToggle.style.display = 'block';
+            if (storeLabel) storeLabel.textContent = 'Store Name:';
+            if (storeInput) storeInput.required = true;
+            if (sourceLabel) sourceLabel.textContent = 'Source Account:';
+        }
+    }
 
     function showLoading(customMsg) {
         if (customMsg) {
@@ -481,6 +548,18 @@
             if (splitPayloadInput) splitPayloadInput.value = "";
         }
 
+        // Validate transfer accounts
+        const typeSelect = document.getElementById('transaction_type');
+        if (typeSelect && typeSelect.value === 'transfer') {
+            const srcAcc = document.getElementById('source_account').value;
+            const destAcc = document.getElementById('destination_account').value;
+            if (srcAcc && destAcc && srcAcc.trim().toLowerCase() === destAcc.trim().toLowerCase()) {
+                alert("Source and destination accounts must be different for a transfer.\n\nPlease select two different accounts.");
+                e.preventDefault();
+                return false;
+            }
+        }
+
         if (hasDuplicates) {
             const proceed = confirm(
                 "⚠️ Potential Duplicate Detected!\n\n" +
@@ -598,7 +677,8 @@
         }
     });
 
-    // Initialize splits on page load if pre-detected
+    // Initialize view and splits on page load
+    updateTransactionTypeView();
     if (isSplitActive) {
         toggleSplitPayment(true);
     }

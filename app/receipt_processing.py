@@ -380,8 +380,10 @@ def build_extraction_prompt(
             "7) time (in 24-hour HH:MM format, e.g. '14:35'). If the time of purchase is specified, extract it; otherwise set to null.\n"
             "8) payment_method ('card', 'cash', 'split', or 'other'). Look for card payment keywords (e.g. Visa, Mastercard, Maestro, EC, Debit, Credit, Kartenzahlung) or cash payment keywords (e.g. Cash, Bar, Barzahlung, Geg. Bar, Wechselgeld). If paid with multiple methods, specify 'split'.\n"
             "9) card_last_four (the last 4 digits of the payment card if mentioned, e.g. '1234', '**** 1234', '...1234'). If paid in cash or card digits are not mentioned, set to null.\n"
-            "10) is_split_payment (boolean, true if the transaction was paid with multiple payment methods; otherwise false).\n"
-            "11) splits (if is_split_payment is true, list of split payment objects with 'payment_method', 'amount', and optional 'card_last_four'; otherwise empty list []).\n\n"
+            "10) transaction_type ('withdrawal', 'transfer', or 'deposit'). Default is 'withdrawal'. If this transaction represents an ATM cash withdrawal or a transfer between accounts, specify 'transfer'.\n"
+            "11) destination_account (if transaction_type is 'transfer', the receiving asset account name e.g. 'Cash wallet' or 'Savings'; otherwise null).\n"
+            "12) is_split_payment (boolean, true if the transaction was paid with multiple payment methods; otherwise false).\n"
+            "13) splits (if is_split_payment is true, list of split payment objects with 'payment_method', 'amount', and optional 'card_last_four'; otherwise empty list []).\n\n"
             "--- RECEIPT TEXT START ---\n"
             + receipt_text
             + "\n--- RECEIPT TEXT END ---\n\n"
@@ -398,6 +400,8 @@ def build_extraction_prompt(
             '      "budget": "string | null",\n'
             '      "payment_method": "card | cash | split | other | null",\n'
             '      "card_last_four": "1234 | null",\n'
+            '      "transaction_type": "withdrawal | transfer | deposit",\n'
+            '      "destination_account": "string | null",\n'
             '      "is_split_payment": false,\n'
             '      "splits": []\n'
             "    }\n"
@@ -426,8 +430,10 @@ def build_extraction_prompt(
         "7) time (in 24-hour HH:MM format, e.g. '14:35'). If the exact time of purchase is printed on the receipt, extract it; otherwise set to null.\n"
         "8) payment_method ('card', 'cash', 'split', or 'other'). Look for card payment keywords (e.g. Visa, Mastercard, Maestro, EC, Debit, Credit, Kartenzahlung) or cash payment keywords (e.g. Cash, Bar, Barzahlung, Geg. Bar, Wechselgeld). If paid with multiple methods, specify 'split'.\n"
         "9) card_last_four (the last 4 digits of the payment card if printed on the receipt, e.g. '1234', '**** 1234', '...1234', 'PAN: *******1234'). If paid in cash or card digits are not printed, set to null.\n"
-        "10) is_split_payment (boolean, true if the receipt was paid with multiple payment methods, e.g. part in cash and part with card; otherwise false).\n"
-        "11) splits (if is_split_payment is true, list of split payment objects with 'payment_method', 'amount', and optional 'card_last_four'; otherwise empty list []).\n\n"
+        "10) transaction_type ('withdrawal', 'transfer', or 'deposit'). Default is 'withdrawal'. If this receipt represents an ATM cash withdrawal or a transfer between accounts, specify 'transfer'.\n"
+        "11) destination_account (if transaction_type is 'transfer', the receiving asset account name e.g. 'Cash wallet' or 'Savings'; otherwise null).\n"
+        "12) is_split_payment (boolean, true if the receipt was paid with multiple payment methods, e.g. part in cash and part with card; otherwise false).\n"
+        "13) splits (if is_split_payment is true, list of split payment objects with 'payment_method', 'amount', and optional 'card_last_four'; otherwise empty list []).\n\n"
         "Return ONLY a valid JSON object matching this schema:\n"
         "{\n"
         '  "date": "YYYY-MM-DD",\n'
@@ -439,6 +445,8 @@ def build_extraction_prompt(
         '  "budget": "string | null",\n'
         '  "payment_method": "card | cash | split | other | null",\n'
         '  "card_last_four": "1234 | null",\n'
+        '  "transaction_type": "withdrawal | transfer | deposit",\n'
+        '  "destination_account": "string | null",\n'
         '  "is_split_payment": false,\n'
         '  "splits": [\n'
         '    {"payment_method": "cash", "amount": 0.0, "card_last_four": null},\n'
@@ -596,6 +604,8 @@ async def extract_receipt_data_from_text(receipt_text: str) -> list[dict]:
                 "available_categories": categories,
                 "available_budgets": budgets,
                 "image_base64": "",
+                "transaction_type": (getattr(receipt, "transaction_type", "withdrawal") or "withdrawal").strip().lower(),
+                "destination_account": (getattr(receipt, "destination_account", "") or "").strip(),
             })
 
         print(f"Extracted {len(extracted_list)} transaction(s) from text.")
@@ -719,6 +729,8 @@ async def extract_receipt_data(
             "original_file_base64": original_file_base64,
             "original_filename": fname,
             "is_pdf": is_pdf,
+            "transaction_type": (getattr(receipt, "transaction_type", "withdrawal") or "withdrawal").strip().lower(),
+            "destination_account": (getattr(receipt, "destination_account", "") or "").strip(),
         }
         print("Successfully extracted all data")
         return extracted_data
@@ -732,6 +744,8 @@ async def create_transaction_from_data(
     receipt_data, source_account, image_bytes=None, filename="receipt.jpg"
 ):
     """Create a transaction in Firefly III using the provided data."""
+    tx_type = (receipt_data.get("transaction_type") or "withdrawal").strip().lower()
+    dest_account = (receipt_data.get("destination_account") or "").strip()
     raw_budget = receipt_data.get("budget")
     clean_budget = (
         raw_budget.strip()
@@ -748,6 +762,8 @@ async def create_transaction_from_data(
         description=receipt_data["description"],
         category=receipt_data["category"],
         budget=clean_budget,
+        transaction_type=tx_type,
+        destination_account=dest_account or None,
     )
 
     # Check if this is a split payment across multiple accounts
@@ -815,16 +831,28 @@ async def create_transaction_from_data(
     for attempt in range(max_retries):
         try:
             # Create a transaction based on the receipt data
-            transaction_result = create_firefly_transaction(receipt, source_account)
+            if tx_type != "withdrawal" or dest_account:
+                transaction_result = create_firefly_transaction(
+                    receipt,
+                    source_account,
+                    transaction_type=tx_type,
+                    destination_account=dest_account,
+                )
+            else:
+                transaction_result = create_firefly_transaction(receipt, source_account)
 
             if transaction_result:
                 print("Transaction created successfully:")
+                print(f"- Type: {tx_type}")
                 print(f"- Date: {receipt.date}")
                 print(f"- Amount: {receipt.amount}")
-                print(f"- Store: {receipt.store_name}")
+                if tx_type == "transfer":
+                    print(f"- From: {source_account} -> To: {dest_account or receipt.store_name}")
+                else:
+                    print(f"- Store: {receipt.store_name}")
+                    print(f"- Source Account: {source_account}")
                 print(f"- Category: {receipt.category}")
                 print(f"- Budget: {receipt.budget}")
-                print(f"- Source Account: {source_account}")
                 print(f"- Transaction ID: {transaction_result['data']['id']}")
 
                 # Attach image if provided

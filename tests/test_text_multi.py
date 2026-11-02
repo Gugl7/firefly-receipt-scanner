@@ -8,10 +8,13 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-# Mock dependencies not installed in host python
-for mod in ["app.config", "fastapi", "google", "google.genai", "httpx"]:
-    if mod not in sys.modules:
-        sys.modules[mod] = MagicMock()
+# Mock external dependencies if not installed in host python
+for mod in ["fastapi", "google", "google.genai", "httpx"]:
+    try:
+        __import__(mod)
+    except (ImportError, AttributeError):
+        if mod not in sys.modules:
+            sys.modules[mod] = MagicMock()
 
 from app.models import (
     MultiReceiptModel,

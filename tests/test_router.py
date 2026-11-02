@@ -7,12 +7,20 @@ from unittest.mock import AsyncMock, patch
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-try:
-    import httpx
-except ImportError:
-    from unittest.mock import MagicMock
-    httpx = MagicMock()
-    sys.modules["httpx"] = httpx
+# If app.config was mocked by an earlier test file, remove the mock
+from unittest.mock import MagicMock
+if "app.config" in sys.modules and isinstance(sys.modules["app.config"], MagicMock):
+    del sys.modules["app.config"]
+
+# Mock external dependencies if not installed in host python
+for mod in ["fastapi", "google", "google.genai", "httpx"]:
+    try:
+        __import__(mod)
+    except (ImportError, AttributeError):
+        if mod not in sys.modules:
+            sys.modules[mod] = MagicMock()
+
+import httpx
 from app.config import Settings
 from app.models import ReceiptModel
 from app.receipt_processing import (
@@ -156,116 +164,120 @@ def test_date_and_json_parsing():
     print("Date & JSON parsing tests passed!")
 
 
-async def test_extract_with_router():
-    print("Testing _extract_with_router with mocked httpx...")
+def test_extract_with_router():
+    if isinstance(httpx, MagicMock) or not hasattr(httpx, "MockTransport"):
+        print("Skipping _extract_with_router (httpx not available or MockTransport missing)")
+        return
 
-    settings = Settings(
-        firefly_iii_url="http://firefly.local",
-        firefly_iii_token="token123",
-        ROUTER_BASE_URL="http://localhost:20128/v1",
-        ROUTER_API_KEY="test-api-key",
-        ROUTER_MODEL="gemini-2.5-flash",
-    )
+    async def _run():
+        print("Testing _extract_with_router with mocked httpx...")
 
-    mock_resp_data = {
-        "choices": [
-            {
-                "message": {
-                    "content": json.dumps(
-                        {
-                            "date": "2026-10-26",
-                            "amount": 42.50,
-                            "store_name": "Supermarket",
-                            "description": "Weekly Groceries",
-                            "category": "Groceries",
-                            "budget": "Monthly",
-                        }
-                    )
-                }
-            }
-        ]
-    }
-
-    # Test successful call
-    async def mock_handler(request: httpx.Request):
-        assert request.url == "http://localhost:20128/v1/chat/completions"
-        assert request.headers["Authorization"] == "Bearer test-api-key"
-        body = json.loads(request.read())
-        assert body["model"] == "gemini-2.5-flash"
-        assert body["response_format"] == {"type": "json_object"}
-        assert body["messages"][0]["content"][1]["type"] == "image_url"
-        return httpx.Response(200, json=mock_resp_data)
-
-    transport = httpx.MockTransport(mock_handler)
-    with patch("httpx.AsyncClient", return_value=httpx.AsyncClient(transport=transport)):
-        result = await _extract_with_router("Test prompt", "base64image", settings)
-        assert result.amount == 42.50
-        assert result.store_name == "Supermarket"
-
-    # Test 400 response_format fallback
-    call_count = 0
-
-    async def mock_fallback_handler(request: httpx.Request):
-        nonlocal call_count
-        call_count += 1
-        body = json.loads(request.read())
-        if call_count == 1:
-            assert "response_format" in body
-            return httpx.Response(
-                400, text='{"error": "response_format is not supported by this model"}'
-            )
-        else:
-            assert "response_format" not in body
-            return httpx.Response(200, json=mock_resp_data)
-
-    transport2 = httpx.MockTransport(mock_fallback_handler)
-    with patch("httpx.AsyncClient", return_value=httpx.AsyncClient(transport=transport2)):
-        result = await _extract_with_router("Test prompt", "base64image", settings)
-        assert result.amount == 42.50
-        assert call_count == 2
-
-    # Test SSE streaming response
-    sse_lines = (
-        'data: {"id":"1","choices":[{"delta":{"content":"{\\"date\\": \\"2026-10-26\\", \\"amount\\": 15.00,"}}]}\n\n'
-        'data: {"id":"1","choices":[{"delta":{"content":" \\"store_name\\": \\"Bakery\\", \\"description\\": \\"Bread\\", \\"category\\": \\"Food\\", \\"budget\\": \\"Weekly\\"}"}}]}\n\n'
-        'data: [DONE]\n\n'
-    )
-
-    async def mock_sse_handler(request: httpx.Request):
-        return httpx.Response(
-            200,
-            text=sse_lines,
-            headers={"content-type": "text/event-stream"},
+        settings = Settings(
+            firefly_iii_url="http://firefly.local",
+            firefly_iii_token="token123",
+            ROUTER_BASE_URL="http://localhost:20128/v1",
+            ROUTER_API_KEY="test-api-key",
+            ROUTER_MODEL="gemini-2.5-flash",
         )
 
-    transport_sse = httpx.MockTransport(mock_sse_handler)
-    with patch("httpx.AsyncClient", return_value=httpx.AsyncClient(transport=transport_sse)):
-        result = await _extract_with_router("Test prompt", "base64image", settings)
-        assert result.amount == 15.00
-        assert result.store_name == "Bakery"
+        mock_resp_data = {
+            "choices": [
+                {
+                    "message": {
+                        "content": json.dumps(
+                            {
+                                "date": "2026-10-26",
+                                "amount": 42.50,
+                                "store_name": "Supermarket",
+                                "description": "Weekly Groceries",
+                                "category": "Groceries",
+                                "budget": "Monthly",
+                            }
+                        )
+                    }
+                }
+            ]
+        }
 
-    # Test text-only extraction (no image)
-    async def mock_text_handler(request: httpx.Request):
-        body = json.loads(request.read())
-        assert len(body["messages"][0]["content"]) == 1
-        assert body["messages"][0]["content"][0]["type"] == "text"
-        return httpx.Response(200, json=mock_resp_data)
+        # Test successful call
+        async def mock_handler(request: httpx.Request):
+            assert request.url == "http://localhost:20128/v1/chat/completions"
+            assert request.headers["Authorization"] == "Bearer test-api-key"
+            body = json.loads(request.read())
+            assert body["model"] == "gemini-2.5-flash"
+            assert body["response_format"] == {"type": "json_object"}
+            assert body["messages"][0]["content"][1]["type"] == "image_url"
+            return httpx.Response(200, json=mock_resp_data)
 
-    transport_text = httpx.MockTransport(mock_text_handler)
-    with patch("httpx.AsyncClient", return_value=httpx.AsyncClient(transport=transport_text)):
-        result = await _extract_with_router("Text prompt", None, settings)
-        assert result.amount == 42.50
-        assert result.store_name == "Supermarket"
+        transport = httpx.MockTransport(mock_handler)
+        with patch("httpx.AsyncClient", return_value=httpx.AsyncClient(transport=transport)):
+            result = await _extract_with_router("Test prompt", "base64image", settings)
+            assert result.amount == 42.50
+            assert result.store_name == "Supermarket"
 
-    print("_extract_with_router tests passed!")
+        # Test 400 response_format fallback
+        call_count = 0
+
+        async def mock_fallback_handler(request: httpx.Request):
+            nonlocal call_count
+            call_count += 1
+            body = json.loads(request.read())
+            if call_count == 1:
+                assert "response_format" in body
+                return httpx.Response(
+                    400, text='{"error": "response_format is not supported by this model"}'
+                )
+            else:
+                assert "response_format" not in body
+                return httpx.Response(200, json=mock_resp_data)
+
+        transport2 = httpx.MockTransport(mock_fallback_handler)
+        with patch("httpx.AsyncClient", return_value=httpx.AsyncClient(transport=transport2)):
+            result = await _extract_with_router("Test prompt", "base64image", settings)
+            assert result.amount == 42.50
+            assert call_count == 2
+
+        # Test SSE streaming response
+        sse_lines = (
+            'data: {"id":"1","choices":[{"delta":{"content":"{\\"date\\": \\"2026-10-26\\", \\"amount\\": 15.00,"}}]}\n\n'
+            'data: {"id":"1","choices":[{"delta":{"content":" \\"store_name\\": \\"Bakery\\", \\"description\\": \\"Bread\\", \\"category\\": \\"Food\\", \\"budget\\": \\"Weekly\\"}"}}]}\n\n'
+            'data: [DONE]\n\n'
+        )
+
+        async def mock_sse_handler(request: httpx.Request):
+            return httpx.Response(
+                200,
+                text=sse_lines,
+                headers={"content-type": "text/event-stream"},
+            )
+
+        transport_sse = httpx.MockTransport(mock_sse_handler)
+        with patch("httpx.AsyncClient", return_value=httpx.AsyncClient(transport=transport_sse)):
+            result = await _extract_with_router("Test prompt", "base64image", settings)
+            assert result.amount == 15.00
+            assert result.store_name == "Bakery"
+
+        # Test text-only extraction (no image)
+        async def mock_text_handler(request: httpx.Request):
+            body = json.loads(request.read())
+            assert len(body["messages"][0]["content"]) == 1
+            assert body["messages"][0]["content"][0]["type"] == "text"
+            return httpx.Response(200, json=mock_resp_data)
+
+        transport_text = httpx.MockTransport(mock_text_handler)
+        with patch("httpx.AsyncClient", return_value=httpx.AsyncClient(transport=transport_text)):
+            result = await _extract_with_router("Text prompt", None, settings)
+            assert result.amount == 42.50
+            assert result.store_name == "Supermarket"
+
+        print("_extract_with_router tests passed!")
+
+    asyncio.run(_run())
 
 
 if __name__ == "__main__":
     test_settings()
     test_models()
     test_date_and_json_parsing()
-    if not isinstance(httpx, MagicMock):
-        asyncio.run(test_extract_with_router())
-    else:
-        print("Skipping _extract_with_router network mocking (httpx not installed on host)")
+    test_extract_with_router()
     print("\nALL TESTS PASSED SUCCESSFULLY!")
