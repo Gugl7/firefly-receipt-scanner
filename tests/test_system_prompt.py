@@ -18,7 +18,12 @@ for mod in ["fastapi", "google", "google.genai", "httpx"]:
             sys.modules[mod] = MagicMock()
 
 from app.csv_processor import parse_csv_transactions
-from app.models import MultiReceiptModel, ReceiptModel
+from app.models import (
+    CsvRefineResponse,
+    CsvTransactionUpdate,
+    MultiReceiptModel,
+    ReceiptModel,
+)
 from app.receipt_processing import (
     build_extraction_prompt,
     extract_receipt_data,
@@ -188,31 +193,20 @@ def test_refine_csv_transactions_with_llm():
     asyncio.run(_run_empty())
 
     # 2. System prompt refines categories, store names, and transfer fields
-    refined_models = MultiReceiptModel(
-        transactions=[
-            ReceiptModel(
-                date="2026-10-28",
-                time="12:00",
-                amount=45.00,
+    refined_models = CsvRefineResponse(
+        updates=[
+            CsvTransactionUpdate(
+                index=0,
                 store_name="Lidl",
-                description="Groceries at Lidl",
                 category="Groceries",
                 budget="Weekly Groceries",
-                payment_method="card",
-                card_last_four="1234",
                 transaction_type="withdrawal",
-                destination_account=None,
             ),
-            ReceiptModel(
-                date="2026-10-27",
-                time="09:30",
-                amount=100.00,
+            CsvTransactionUpdate(
+                index=1,
                 store_name="Bankomat",
-                description="ATM Cash Withdrawal",
                 category="General",
                 budget=None,
-                payment_method="cash",
-                card_last_four="9999",
                 transaction_type="transfer",
                 destination_account="Cash wallet",
             ),
@@ -221,7 +215,7 @@ def test_refine_csv_transactions_with_llm():
 
     captured_prompt = None
 
-    async def mock_run_llm(prompt, image=None, image_base64=None, settings=None, response_model=MultiReceiptModel):
+    async def mock_run_llm(prompt, image=None, image_base64=None, settings=None, response_model=CsvRefineResponse):
         nonlocal captured_prompt
         captured_prompt = prompt
         return refined_models
@@ -246,7 +240,6 @@ def test_refine_csv_transactions_with_llm():
             assert refined[0]["store_name"] == "Lidl"
             assert refined[0]["category"] == "Groceries"
             assert refined[0]["budget"] == "Weekly Groceries"
-            assert refined[0]["card_last_four"] == "1234"
 
             # ATM Cash item refined to transfer
             assert refined[1]["store_name"] == "Bankomat"
@@ -273,6 +266,56 @@ def test_refine_csv_transactions_with_llm():
 
     asyncio.run(_run_fallback())
     print("refine_csv_transactions_with_llm tests passed!")
+
+
+def test_large_csv_parallel_refinement():
+    print("Testing 67-row CSV fast parallel refinement...")
+    txs_67 = [
+        {
+            "date": "2026-10-28",
+            "time": "12:00",
+            "amount": 10.0 + i,
+            "store_name": f"Store {i}",
+            "description": f"Desc {i}",
+            "category": "Other",
+            "budget": "Other",
+            "payment_method": "card",
+            "card_last_four": "",
+            "source_account": "Checking",
+            "transaction_type": "withdrawal",
+            "destination_account": "",
+        }
+        for i in range(67)
+    ]
+
+    async def mock_run_chunk(prompt, **kwargs):
+        import re
+        indices = [int(m) for m in re.findall(r'"index":\s*(\d+)', prompt)]
+        updates = [
+            CsvTransactionUpdate(
+                index=idx,
+                category="Groceries" if idx % 2 == 0 else "Transportation",
+                budget="Monthly",
+            )
+            for idx in indices
+        ]
+        return CsvRefineResponse(updates=updates)
+
+    async def _run():
+        with patch("app.receipt_processing._run_llm_extraction", side_effect=mock_run_chunk):
+            refined = await refine_csv_transactions_with_llm(
+                txs_67,
+                system_prompt="Categorize even items as Groceries, odd items as Transportation",
+                categories=["Groceries", "Transportation", "Other"],
+                budgets=["Monthly"],
+            )
+            assert len(refined) == 67
+            assert refined[0]["category"] == "Groceries"
+            assert refined[1]["category"] == "Transportation"
+            assert refined[66]["category"] == "Groceries"
+
+    asyncio.run(_run())
+    print("67-row CSV fast parallel refinement passed!")
 
 
 def test_batch_system_prompt_persistence():
@@ -320,6 +363,7 @@ if __name__ == "__main__":
     test_extract_receipt_data_forwards_system_prompt()
     test_extract_receipt_data_from_text_forwards_system_prompt()
     test_refine_csv_transactions_with_llm()
+    test_large_csv_parallel_refinement()
     test_batch_system_prompt_persistence()
     test_csv_app_import_and_refinement()
     print("\nAll system prompt tests passed successfully!")

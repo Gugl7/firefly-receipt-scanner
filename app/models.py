@@ -68,6 +68,19 @@ class MultiReceiptModel(BaseModel):
     transactions: list[ReceiptModel] = []
 
 
+class CsvTransactionUpdate(BaseModel):
+    index: int
+    category: str | None = None
+    budget: str | None = None
+    store_name: str | None = None
+    transaction_type: str | None = None
+    destination_account: str | None = None
+
+
+class CsvRefineResponse(BaseModel):
+    updates: list[CsvTransactionUpdate] = []
+
+
 def validate_model_json(model_cls, json_str: str):
     """Validate JSON string into model instance supporting both Pydantic v1 and v2."""
     if hasattr(model_cls, "model_validate_json"):

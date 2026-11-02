@@ -1,3 +1,4 @@
+import asyncio
 import base64
 import json
 import os
@@ -300,26 +301,41 @@ async def extract_receipt(
             # If deterministic parser found 0 transactions and a prompt was provided, try LLM fallback on raw CSV text
             if not parsed_txs and csv_prompt:
                 print("Deterministic CSV parsing found 0 rows. Attempting LLM extraction from CSV text...")
-                from .csv_processor import decode_csv_bytes
-                csv_text = decode_csv_bytes(csv_bytes)
-                extracted_txs = await extract_receipt_data_from_text(
-                    csv_text, system_prompt=csv_prompt
-                )
-                if extracted_txs:
-                    parsed_txs = [
-                        enrich_extracted_data_accounts(tx, asset_accounts, effective_account)
-                        for tx in extracted_txs
-                    ]
+                try:
+                    from .csv_processor import decode_csv_bytes
+                    csv_text = decode_csv_bytes(csv_bytes)
+                    # Limit sample to first 25 non-empty lines to prevent token timeouts
+                    csv_lines = [l for l in csv_text.splitlines() if l.strip()]
+                    sample_text = "\n".join(csv_lines[:25])
+                    extracted_txs = await asyncio.wait_for(
+                        extract_receipt_data_from_text(sample_text, system_prompt=csv_prompt),
+                        timeout=15.0,
+                    )
+                    if extracted_txs:
+                        parsed_txs = [
+                            enrich_extracted_data_accounts(tx, asset_accounts, effective_account)
+                            for tx in extracted_txs
+                        ]
+                except Exception as e:
+                    print(f"Warning: Fallback LLM text extraction for CSV failed or timed out: {e}")
 
-            # If transactions were found and a custom prompt was provided, refine them using the LLM
+            # If transactions were found and a custom prompt was provided, refine them using fast parallel LLM
             if parsed_txs and csv_prompt:
-                parsed_txs = await refine_csv_transactions_with_llm(
-                    parsed_txs,
-                    system_prompt=csv_prompt,
-                    categories=get_firefly_categories(),
-                    budgets=get_firefly_budgets(),
-                    asset_accounts=asset_accounts,
-                )
+                try:
+                    parsed_txs = await asyncio.wait_for(
+                        refine_csv_transactions_with_llm(
+                            parsed_txs,
+                            system_prompt=csv_prompt,
+                            categories=get_firefly_categories(),
+                            budgets=get_firefly_budgets(),
+                            asset_accounts=asset_accounts,
+                        ),
+                        timeout=20.0,
+                    )
+                except Exception as e:
+                    print(
+                        f"Warning: CSV LLM refinement failed or timed out ({e}), proceeding with parsed transactions."
+                    )
 
             if not parsed_txs:
                 return templates.TemplateResponse(

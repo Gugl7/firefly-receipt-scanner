@@ -342,9 +342,18 @@ def parse_csv_transactions(
 
     # 1. Identify header row (search first 15 lines)
     header_idx = 0
-    date_keywords = ["datum", "date", "buchung", "valuta", "zeitpunkt", "tag", "transaktion"]
-    amount_keywords = ["betrag", "amount", "umsatz", "wert", "summe", "total", "soll", "haben", "debit", "credit"]
-    payee_keywords = ["partner", "empfänger", "begünstigter", "store", "merchant", "payee", "beschreibung", "text"]
+    date_keywords = [
+        "datum", "date", "buchung", "valuta", "zeitpunkt", "tag", "transaktion",
+        "time", "day", "txn", "posted", "booking"
+    ]
+    amount_keywords = [
+        "betrag", "amount", "umsatz", "wert", "summe", "total", "soll", "haben", "debit", "credit",
+        "price", "preis", "kosten", "cost", "charge", "paid", "inflow", "outflow", "value", "balance"
+    ]
+    payee_keywords = [
+        "partner", "empfänger", "empfaenger", "begünstigter", "beguenstigter", "store", "merchant", "payee",
+        "vendor", "beschreibung", "description", "text", "memo", "details", "name", "recipient", "haendler", "händler"
+    ]
 
     for i in range(min(15, len(lines))):
         line = lines[i]
@@ -384,7 +393,7 @@ def parse_csv_transactions(
         if "date" not in col_map:
             if any(k in col_clean for k in ["buchungsdatum", "transaktionsdatum", "booking date", "transaction date", "posting date", "buchungstag"]):
                 col_map["date"] = idx
-            elif any(k in col_clean for k in ["datum", "date", "valutadatum", "value date", "valuta", "wertstellung", "tag"]):
+            elif any(k in col_clean for k in ["datum", "date", "valutadatum", "value date", "valuta", "wertstellung", "tag", "txn date", "post date", "day"]):
                 col_map["date"] = idx
 
         # Time column
@@ -430,10 +439,26 @@ def parse_csv_transactions(
         elif any(k in col_clean for k in ["credit", "haben", "einnahme", "einnahmen", "gutschrift", "inflow", "deposit"]):
             credit_col = idx
         elif "amount" not in col_map and "wertstellung" not in col_clean:
-            if any(k in col_clean for k in ["betrag", "amount", "umsatz", "total", "summe", "sum", "preis", "price", "kosten", "zahlungsbetrag"]):
+            if any(k in col_clean for k in ["betrag", "amount", "umsatz", "total", "summe", "sum", "preis", "price", "kosten", "cost", "charge", "paid", "value", "zahlungsbetrag"]):
                 col_map["amount"] = idx
             elif col_clean == "wert" or col_clean.startswith("wert ") or col_clean.endswith(" wert"):
                 col_map["amount"] = idx
+
+    # Fallback auto-detection of date and amount columns by cell inspection if headers didn't match
+    if "date" not in col_map or ("amount" not in col_map and debit_col is None and credit_col is None):
+        sample_rows = [r for r in lines[header_idx + 1: header_idx + 10]]
+        for r_str in sample_rows:
+            try:
+                r_cells = next(csv.reader([r_str], delimiter=delimiter))
+            except Exception:
+                continue
+            for c_idx, cell in enumerate(r_cells):
+                cell_s = cell.strip()
+                if "date" not in col_map and re.search(r"\b(\d{1,4}[./-]\d{1,2}[./-]\d{1,4})\b", cell_s):
+                    col_map["date"] = c_idx
+                if "amount" not in col_map and debit_col is None and credit_col is None:
+                    if parse_csv_amount(cell_s) is not None and not re.search(r"\b(\d{1,4}[./-]\d{1,2}[./-]\d{1,4})\b", cell_s):
+                        col_map["amount"] = c_idx
 
     transactions = []
 

@@ -1,3 +1,4 @@
+import asyncio
 import base64
 import json
 import re
@@ -20,6 +21,8 @@ from .firefly import (
 )
 from .image_utils import process_image
 from .models import (
+    CsvRefineResponse,
+    CsvTransactionUpdate,
     MultiReceiptModel,
     ReceiptModel,
     validate_model_json,
@@ -108,6 +111,34 @@ def parse_multi_receipt_json(content: str) -> MultiReceiptModel:
         return MultiReceiptModel(transactions=[validate_model_obj(ReceiptModel, data)])
 
     return MultiReceiptModel(transactions=[])
+
+
+def parse_csv_refine_json(content: str) -> CsvRefineResponse:
+    json_str = extract_json_str(content)
+    try:
+        data = json.loads(json_str)
+        if isinstance(data, list):
+            items = [
+                validate_model_obj(CsvTransactionUpdate, x)
+                for x in data
+                if isinstance(x, dict)
+            ]
+            return CsvRefineResponse(updates=items)
+        if isinstance(data, dict):
+            for k in ("updates", "transactions", "items", "data"):
+                if k in data and isinstance(data[k], list):
+                    items = [
+                        validate_model_obj(CsvTransactionUpdate, x)
+                        for x in data[k]
+                        if isinstance(x, dict)
+                    ]
+                    return CsvRefineResponse(updates=items)
+    except Exception as e:
+        print(f"Warning: Failed to parse CSV refine JSON directly: {e}")
+    try:
+        return validate_model_json(CsvRefineResponse, json_str)
+    except Exception:
+        return CsvRefineResponse(updates=[])
 
 
 
@@ -350,6 +381,8 @@ async def _extract_with_router(
     print("Received response from 9router")
     if response_model == MultiReceiptModel:
         return parse_multi_receipt_json(content)
+    if response_model == CsvRefineResponse:
+        return parse_csv_refine_json(content)
     return parse_receipt_json(content)
 
 
@@ -510,6 +543,8 @@ async def _run_llm_extraction(
         if parsed is None and hasattr(gemini_response, "text") and gemini_response.text:
             if response_model == MultiReceiptModel:
                 return parse_multi_receipt_json(gemini_response.text)
+            if response_model == CsvRefineResponse:
+                return parse_csv_refine_json(gemini_response.text)
             return parse_receipt_json(gemini_response.text)
         return parsed
     except Exception as e:
@@ -942,7 +977,7 @@ async def refine_csv_transactions_with_llm(
     budgets: list[str] | None = None,
     asset_accounts: list[str] | None = None,
 ) -> list[dict]:
-    """Use LLM with custom system prompt to refine, categorize, or correct CSV-parsed transactions."""
+    """Use LLM with custom system prompt to quickly refine, categorize, or correct CSV-parsed transactions."""
     if not system_prompt or not system_prompt.strip() or not transactions:
         return transactions
 
@@ -963,36 +998,32 @@ async def refine_csv_transactions_with_llm(
         f"Refining {len(transactions)} CSV transaction(s) using LLM with system prompt: '{clean_sp[:80]}...'"
     )
 
-    chunk_size = 25
-    refined_transactions = []
+    chunk_size = 35
+    chunks = [
+        transactions[i : i + chunk_size]
+        for i in range(0, len(transactions), chunk_size)
+    ]
 
-    for i in range(0, len(transactions), chunk_size):
-        chunk = transactions[i : i + chunk_size]
-        chunk_items = []
-        for idx, tx in enumerate(chunk):
-            chunk_items.append({
-                "index": idx,
-                "date": tx.get("date", ""),
-                "time": tx.get("time", ""),
-                "amount": tx.get("amount", 0.0),
-                "store_name": tx.get("store_name", ""),
+    async def _process_chunk(chunk: list[dict], offset: int) -> list[dict]:
+        chunk_items = [
+            {
+                "index": offset + idx,
+                "store": tx.get("store_name", ""),
                 "description": tx.get("description", ""),
+                "amount": tx.get("amount", 0.0),
                 "category": tx.get("category", ""),
                 "budget": tx.get("budget", ""),
-                "payment_method": tx.get("payment_method", ""),
-                "card_last_four": tx.get("card_last_four", ""),
-                "source_account": tx.get("source_account", ""),
-                "transaction_type": tx.get("transaction_type", "withdrawal"),
-                "destination_account": tx.get("destination_account", ""),
-            })
+            }
+            for idx, tx in enumerate(chunk)
+        ]
 
         prompt = (
             "--- USER CUSTOM INSTRUCTIONS / SYSTEM PROMPT ---\n"
             f"{clean_sp}\n"
-            "Pay close attention to the instructions above and follow them to review, refine, categorize, or correct the transactions.\n"
+            "Apply these instructions to review and refine the following bank/expense transactions.\n"
             "------------------------------------------------\n\n"
-            "We parsed candidate transactions from a bank/expense CSV export:\n"
-            f"{json.dumps(chunk_items, indent=2, ensure_ascii=False)}\n\n"
+            "Candidate transactions:\n"
+            f"{json.dumps(chunk_items, ensure_ascii=False)}\n\n"
             "Available Firefly III Categories: "
             + ", ".join(categories)
             + "\n"
@@ -1000,88 +1031,113 @@ async def refine_csv_transactions_with_llm(
             + (", ".join(budgets) if budgets else "None")
             + "\n"
             "Available Firefly III Asset Accounts: "
-            + (", ".join(asset_accounts) if asset_accounts else "None")
+            + (", ".join(asset_accounts or []) if asset_accounts else "None")
             + "\n\n"
             "Instructions:\n"
-            "1. Apply the user's custom instructions to update/refine the transactions (e.g. adjust categories, budgets, merchant names, payment methods, card digits, or detect transfers).\n"
-            "2. Keep the date and amount accurate unless the user specifically instructed a modification.\n"
-            "3. If a budget was not assigned or does not apply, set budget to null.\n"
-            "4. Return a JSON object with a 'transactions' array containing the refined transactions matching this schema:\n"
-            "{\n"
-            '  "transactions": [\n'
-            "    {\n"
-            '      "date": "YYYY-MM-DD",\n'
-            '      "time": "HH:MM or null",\n'
-            '      "amount": 0.0,\n'
-            '      "store_name": "string",\n'
-            '      "description": "string",\n'
-            '      "category": "string",\n'
-            '      "budget": "string | null",\n'
-            '      "payment_method": "card | cash | split | other | null",\n'
-            '      "card_last_four": "1234 | null",\n'
-            '      "transaction_type": "withdrawal | transfer | deposit",\n'
-            '      "destination_account": "string | null",\n'
-            '      "is_split_payment": false,\n'
-            '      "splits": []\n'
-            "    }\n"
-            "  ]\n"
-            "}"
+            "1. Apply the user's custom instructions to update fields that need changes (category, budget, store_name, or transaction_type).\n"
+            "2. If no budget applies or the user specifies no budget, set budget to null.\n"
+            "3. If a transaction represents an ATM cash withdrawal or account transfer, set transaction_type to 'transfer' and destination_account to the target asset account (e.g. 'Cash wallet').\n"
+            "4. Return a JSON object with 'updates': a list of objects containing at minimum 'index' (int), 'category' (str), 'budget' (str or null), and optionally 'store_name', 'transaction_type', 'destination_account'."
         )
 
         try:
-            result = await _run_llm_extraction(
-                prompt, image=None, image_base64=None, response_model=MultiReceiptModel
+            # Enforce 15-second timeout on each chunk so it never hangs
+            res = await asyncio.wait_for(
+                _run_llm_extraction(
+                    prompt,
+                    image=None,
+                    image_base64=None,
+                    response_model=CsvRefineResponse,
+                ),
+                timeout=15.0,
             )
-            llm_txs: list[ReceiptModel] = []
-            if isinstance(result, MultiReceiptModel):
-                llm_txs = result.transactions
-            elif isinstance(result, ReceiptModel):
-                llm_txs = [result]
-            elif isinstance(result, list):
-                llm_txs = result
 
-            if len(llm_txs) == len(chunk):
-                for orig_tx, refined_rm in zip(chunk, llm_txs):
-                    merged = dict(orig_tx)
-                    if refined_rm.store_name and refined_rm.store_name != "Unknown Store":
-                        merged["store_name"] = refined_rm.store_name
-                    if refined_rm.category:
-                        merged["category"] = refined_rm.category
-                    if refined_rm.budget is not None:
-                        clean_b = refined_rm.budget.strip()
-                        merged["budget"] = "" if clean_b.lower() in ("none", "null") else clean_b
+            updates_list = []
+            if isinstance(res, CsvRefineResponse):
+                updates_list = res.updates
+            elif isinstance(res, dict) and "updates" in res:
+                updates_list = res["updates"]
+
+            updates_by_idx = {}
+            for u in updates_list:
+                idx_val = (
+                    getattr(u, "index", None)
+                    if not isinstance(u, dict)
+                    else u.get("index")
+                )
+                if idx_val is not None:
+                    updates_by_idx[int(idx_val)] = u
+
+            refined_chunk = []
+            for idx, orig_tx in enumerate(chunk):
+                abs_idx = offset + idx
+                merged = dict(orig_tx)
+                if abs_idx in updates_by_idx:
+                    up = updates_by_idx[abs_idx]
+                    up_cat = (
+                        getattr(up, "category", None)
+                        if not isinstance(up, dict)
+                        else up.get("category")
+                    )
+                    up_bud = (
+                        getattr(up, "budget", None)
+                        if not isinstance(up, dict)
+                        else up.get("budget")
+                    )
+                    up_store = (
+                        getattr(up, "store_name", None)
+                        if not isinstance(up, dict)
+                        else up.get("store_name")
+                    )
+                    up_type = (
+                        getattr(up, "transaction_type", None)
+                        if not isinstance(up, dict)
+                        else up.get("transaction_type")
+                    )
+                    up_dest = (
+                        getattr(up, "destination_account", None)
+                        if not isinstance(up, dict)
+                        else up.get("destination_account")
+                    )
+
+                    if up_cat:
+                        merged["category"] = up_cat.strip()
+                    if up_bud is not None:
+                        clean_b = (
+                            up_bud.strip() if isinstance(up_bud, str) else ""
+                        )
+                        merged["budget"] = (
+                            ""
+                            if clean_b.lower() in ("none", "null")
+                            else clean_b
+                        )
                     else:
                         merged["budget"] = ""
-                    if refined_rm.description:
-                        merged["description"] = refined_rm.description
-                    if refined_rm.payment_method:
-                        merged["payment_method"] = refined_rm.payment_method.strip().lower()
-                    if refined_rm.card_last_four:
-                        clean_c = clean_card_digits(refined_rm.card_last_four)
-                        if clean_c:
-                            merged["card_last_four"] = clean_c
-                    if getattr(refined_rm, "transaction_type", None):
-                        merged["transaction_type"] = refined_rm.transaction_type.strip().lower()
-                    if getattr(refined_rm, "destination_account", None):
-                        merged["destination_account"] = refined_rm.destination_account.strip()
-                    if getattr(refined_rm, "is_split_payment", False):
-                        merged["is_split_payment"] = True
-                        merged["splits"] = [
-                            {
-                                "payment_method": getattr(sp, "payment_method", "") or "",
-                                "amount": getattr(sp, "amount", 0.0) or 0.0,
-                                "card_last_four": clean_card_digits(getattr(sp, "card_last_four", None)) or "",
-                            }
-                            for sp in (getattr(refined_rm, "splits", None) or [])
-                        ]
-                    refined_transactions.append(merged)
-            else:
-                print(
-                    f"Warning: LLM returned {len(llm_txs)} items for chunk of {len(chunk)}, using deterministic items."
-                )
-                refined_transactions.extend(chunk)
-        except Exception as e:
-            print(f"Warning: LLM refinement of CSV chunk failed ({e}), using deterministic items.")
-            refined_transactions.extend(chunk)
+                    if (
+                        up_store
+                        and up_store.strip()
+                        and up_store.strip().lower() != "unknown store"
+                    ):
+                        merged["store_name"] = up_store.strip()
+                    if up_type:
+                        merged["transaction_type"] = up_type.strip().lower()
+                    if up_dest:
+                        merged["destination_account"] = up_dest.strip()
 
-    return refined_transactions
+                refined_chunk.append(merged)
+            return refined_chunk
+
+        except Exception as e:
+            print(
+                f"Warning: LLM refinement of CSV chunk (offset {offset}) failed or timed out ({e}), using deterministic items."
+            )
+            return chunk
+
+    # Run chunks concurrently in parallel
+    tasks = [_process_chunk(chunk, i * chunk_size) for i, chunk in enumerate(chunks)]
+    results = await asyncio.gather(*tasks)
+
+    flattened = []
+    for r in results:
+        flattened.extend(r)
+    return flattened
