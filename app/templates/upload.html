@@ -46,12 +46,12 @@
         <button type="submit" id="submit-csv-btn" class="btn">Import CSV Transactions</button>
     </div>
 
-    <!-- Plain Text Mode (One at a time) -->
+    <!-- Plain Text Mode (Single or multiple transactions) -->
     <div id="section-text" style="display: none;">
         <div class="form-group">
-            <label for="receipt_text">Paste Receipt Details:</label>
-            <textarea id="receipt_text" name="receipt_text" rows="8" placeholder="Paste e-receipt, email text, or receipt summary here...&#10;&#10;e.g.&#10;Store: Target&#10;Date: 2026-10-25&#10;Total: $42.50&#10;Items: Milk, Bread, Coffee..."></textarea>
-            <small class="helper-text">Paste text from an email receipt, SMS alert, or invoice.</small>
+            <label for="receipt_text">Paste Receipt(s) or Transaction Details:</label>
+            <textarea id="receipt_text" name="receipt_text" rows="9" placeholder="Paste one or multiple receipts, expense notes, or transaction emails here...&#10;&#10;e.g. Single receipt:&#10;Store: Target&#10;Date: 2026-10-25&#10;Total: $42.50&#10;Items: Groceries (Milk, Bread)&#10;&#10;Or multiple transactions:&#10;1) 2026-10-26 Billa EUR 18.90 Groceries (paid with card ..1234)&#10;2) 2026-10-26 Shell Gas Station EUR 65.00 Fuel&#10;3) 2026-10-27 Coffee Shop EUR 4.80 Coffee Cash"></textarea>
+            <small class="helper-text">Paste text for a single receipt or multiple transactions (e.g. email receipts, SMS alerts, expense lists). Multiple transactions will be parsed into a batch for sequential review.</small>
         </div>
 
         <button type="submit" id="submit-text-btn" class="btn">Extract From Text</button>
@@ -166,7 +166,7 @@
         const loadingText = document.getElementById('loading-text');
         if (currentMode === 'text') {
             if (loadingText) {
-                loadingText.textContent = 'Analyzing receipt text... Please wait.';
+                loadingText.textContent = 'Analyzing text and extracting transactions... Please wait.';
             }
         } else if (currentMode === 'csv') {
             if (loadingText) {

@@ -60,3 +60,22 @@ class ReceiptModel(BaseModel):
                 cleaned = cleaned.replace(",", ".")
             return float(cleaned)
         return v
+
+
+class MultiReceiptModel(BaseModel):
+    transactions: list[ReceiptModel] = []
+
+
+def validate_model_json(model_cls, json_str: str):
+    """Validate JSON string into model instance supporting both Pydantic v1 and v2."""
+    if hasattr(model_cls, "model_validate_json"):
+        return model_cls.model_validate_json(json_str)
+    return model_cls.parse_raw(json_str)
+
+
+def validate_model_obj(model_cls, obj: dict):
+    """Validate dictionary into model instance supporting both Pydantic v1 and v2."""
+    if hasattr(model_cls, "model_validate"):
+        return model_cls.model_validate(obj)
+    return model_cls.parse_obj(obj)
+

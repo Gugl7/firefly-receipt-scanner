@@ -19,7 +19,12 @@ from .firefly import (
     get_firefly_categories,
 )
 from .image_utils import process_image
-from .models import ReceiptModel
+from .models import (
+    MultiReceiptModel,
+    ReceiptModel,
+    validate_model_json,
+    validate_model_obj,
+)
 
 
 @lru_cache
@@ -35,7 +40,7 @@ def get_gemini_client() -> genai.Client:
 
 
 def extract_json_str(text: str) -> str:
-    """Extract JSON object substring from raw model output."""
+    """Extract JSON object or array substring from raw model output."""
     text = text.strip()
     if text.startswith("```"):
         lines = text.splitlines()
@@ -44,16 +49,66 @@ def extract_json_str(text: str) -> str:
         if lines and lines[-1].startswith("```"):
             lines = lines[:-1]
         text = "\n".join(lines).strip()
-    start = text.find("{")
-    end = text.rfind("}")
-    if start != -1 and end != -1 and end >= start:
-        return text[start : end + 1]
+
+    first_brace = text.find("{")
+    first_bracket = text.find("[")
+
+    if first_bracket != -1 and (first_brace == -1 or first_bracket < first_brace):
+        last_bracket = text.rfind("]")
+        if last_bracket != -1 and last_bracket >= first_bracket:
+            return text[first_bracket : last_bracket + 1]
+
+    if first_brace != -1:
+        last_brace = text.rfind("}")
+        if last_brace != -1 and last_brace >= first_brace:
+            return text[first_brace : last_brace + 1]
+
     return text
 
 
 def parse_receipt_json(content: str) -> ReceiptModel:
     json_str = extract_json_str(content)
-    return ReceiptModel.model_validate_json(json_str)
+    return validate_model_json(ReceiptModel, json_str)
+
+
+def parse_multi_receipt_json(content: str) -> MultiReceiptModel:
+    """Parse JSON content from LLM into a MultiReceiptModel containing one or more transactions."""
+    json_str = extract_json_str(content)
+    try:
+        data = json.loads(json_str)
+    except Exception:
+        # Fallback to single receipt parsing if it parses as a single receipt
+        single = parse_receipt_json(content)
+        return MultiReceiptModel(transactions=[single])
+
+    if isinstance(data, list):
+        tx_list = [
+            validate_model_obj(ReceiptModel, item)
+            for item in data
+            if isinstance(item, dict)
+        ]
+        return MultiReceiptModel(transactions=tx_list)
+
+    if isinstance(data, dict):
+        if "transactions" in data and isinstance(data["transactions"], list):
+            tx_list = [
+                validate_model_obj(ReceiptModel, item)
+                for item in data["transactions"]
+                if isinstance(item, dict)
+            ]
+            return MultiReceiptModel(transactions=tx_list)
+        if "receipts" in data and isinstance(data["receipts"], list):
+            tx_list = [
+                validate_model_obj(ReceiptModel, item)
+                for item in data["receipts"]
+                if isinstance(item, dict)
+            ]
+            return MultiReceiptModel(transactions=tx_list)
+        # Single receipt object dictionary
+        return MultiReceiptModel(transactions=[validate_model_obj(ReceiptModel, data)])
+
+    return MultiReceiptModel(transactions=[])
+
 
 
 def normalize_time(time_str: str | None) -> str | None:
@@ -202,8 +257,11 @@ def _parse_router_response(response: httpx.Response) -> str:
 
 
 async def _extract_with_router(
-    prompt: str, image_base64: str | None, settings: Settings
-) -> ReceiptModel:
+    prompt: str,
+    image_base64: str | None,
+    settings: Settings,
+    response_model=ReceiptModel,
+) -> ReceiptModel | MultiReceiptModel:
     headers = {
         "Content-Type": "application/json",
         "Accept": "application/json, text/event-stream",
@@ -290,15 +348,65 @@ async def _extract_with_router(
             ) from e
 
     print("Received response from 9router")
+    if response_model == MultiReceiptModel:
+        return parse_multi_receipt_json(content)
     return parse_receipt_json(content)
 
 
 def build_extraction_prompt(
     categories: list[str], budgets: list[str], receipt_text: str | None = None
 ) -> str:
-    target_desc = (
-        "the provided receipt text" if receipt_text else "the attached receipt image"
-    )
+    today_str = datetime.now().strftime("%Y-%m-%d")
+
+    if receipt_text:
+        prompt = (
+            "Please analyze the provided text and extract all transactions found in it.\n"
+            "The text may contain a SINGLE transaction or MULTIPLE distinct transactions (e.g. an expense list, multiple receipts, or pasted statement lines).\n"
+            "For each transaction found, extract the following details:\n"
+            "1) amount (receipt total amount as a number)\n"
+            "2) category (choose the best matching category from: "
+            + ", ".join(categories)
+            + ")\n"
+            "3) budget (choose the best matching budget from: "
+            + ", ".join(budgets)
+            + ")\n"
+            "4) store_name (destination account / store or merchant name)\n"
+            "5) description (brief description of the transaction)\n"
+            "6) date (in YYYY-MM-DD format). Today's date is "
+            + today_str
+            + ".\n"
+            "Most transactions are from the past few days, so use today's date as a reference point when interpreting dates.\n"
+            "If the date is not specified, use today's date as the default.\n"
+            "7) time (in 24-hour HH:MM format, e.g. '14:35'). If the time of purchase is specified, extract it; otherwise set to null.\n"
+            "8) payment_method ('card', 'cash', 'split', or 'other'). Look for card payment keywords (e.g. Visa, Mastercard, Maestro, EC, Debit, Credit, Kartenzahlung) or cash payment keywords (e.g. Cash, Bar, Barzahlung, Geg. Bar, Wechselgeld). If paid with multiple methods, specify 'split'.\n"
+            "9) card_last_four (the last 4 digits of the payment card if mentioned, e.g. '1234', '**** 1234', '...1234'). If paid in cash or card digits are not mentioned, set to null.\n"
+            "10) is_split_payment (boolean, true if the transaction was paid with multiple payment methods; otherwise false).\n"
+            "11) splits (if is_split_payment is true, list of split payment objects with 'payment_method', 'amount', and optional 'card_last_four'; otherwise empty list []).\n\n"
+            "--- RECEIPT TEXT START ---\n"
+            + receipt_text
+            + "\n--- RECEIPT TEXT END ---\n\n"
+            "Return ONLY a valid JSON object with a 'transactions' array containing all extracted transactions (even if only 1 transaction is found):\n"
+            "{\n"
+            '  "transactions": [\n'
+            "    {\n"
+            '      "date": "YYYY-MM-DD",\n'
+            '      "time": "HH:MM",\n'
+            '      "amount": 0.0,\n'
+            '      "store_name": "string",\n'
+            '      "description": "string",\n'
+            '      "category": "string",\n'
+            '      "budget": "string",\n'
+            '      "payment_method": "card | cash | split | other | null",\n'
+            '      "card_last_four": "1234 | null",\n'
+            '      "is_split_payment": false,\n'
+            '      "splits": []\n'
+            "    }\n"
+            "  ]\n"
+            "}"
+        )
+        return prompt
+
+    target_desc = "the attached receipt image"
     prompt = (
         f"Please analyze {target_desc} and extract the following details:\n"
         "1) amount (receipt total amount as a number)\n"
@@ -311,7 +419,7 @@ def build_extraction_prompt(
         "4) store_name (destination account / store or merchant name)\n"
         "5) description (brief description of the transaction)\n"
         "6) date (in YYYY-MM-DD format). Today's date is "
-        + datetime.now().strftime("%Y-%m-%d")
+        + today_str
         + ".\n"
         "Most receipts are from the past few days, so use today's date as a reference point when interpreting dates.\n"
         "If the date is not on the receipt, use today's date as the default.\n"
@@ -320,14 +428,6 @@ def build_extraction_prompt(
         "9) card_last_four (the last 4 digits of the payment card if printed on the receipt, e.g. '1234', '**** 1234', '...1234', 'PAN: *******1234'). If paid in cash or card digits are not printed, set to null.\n"
         "10) is_split_payment (boolean, true if the receipt was paid with multiple payment methods, e.g. part in cash and part with card; otherwise false).\n"
         "11) splits (if is_split_payment is true, list of split payment objects with 'payment_method', 'amount', and optional 'card_last_four'; otherwise empty list []).\n\n"
-    )
-    if receipt_text:
-        prompt += (
-            "--- RECEIPT TEXT START ---\n"
-            + receipt_text
-            + "\n--- RECEIPT TEXT END ---\n\n"
-        )
-    prompt += (
         "Return ONLY a valid JSON object matching this schema:\n"
         "{\n"
         '  "date": "YYYY-MM-DD",\n'
@@ -354,12 +454,15 @@ async def _run_llm_extraction(
     image=None,
     image_base64: str | None = None,
     settings: Settings | None = None,
-) -> ReceiptModel:
+    response_model=ReceiptModel,
+) -> ReceiptModel | MultiReceiptModel:
     if settings is None:
         settings = get_settings()
 
     if settings.effective_llm_provider == "9router":
-        return await _extract_with_router(prompt, image_base64, settings)
+        return await _extract_with_router(
+            prompt, image_base64, settings, response_model=response_model
+        )
 
     if not settings.google_ai_api_key:
         raise ValueError(
@@ -377,11 +480,16 @@ async def _run_llm_extraction(
             contents=contents,
             config={
                 "response_mime_type": "application/json",
-                "response_schema": ReceiptModel,
+                "response_schema": response_model,
             },
         )
         print("Received response from Gemini")
-        return gemini_response.parsed
+        parsed = gemini_response.parsed
+        if parsed is None and hasattr(gemini_response, "text") and gemini_response.text:
+            if response_model == MultiReceiptModel:
+                return parse_multi_receipt_json(gemini_response.text)
+            return parse_receipt_json(gemini_response.text)
+        return parsed
     except Exception as e:
         print(f"Error during Gemini analysis: {str(e)}")
         print(f"Error type: {type(e)}")
@@ -392,8 +500,8 @@ async def _run_llm_extraction(
         raise e
 
 
-async def extract_receipt_data_from_text(receipt_text: str):
-    """Extract receipt data from text without an image."""
+async def extract_receipt_data_from_text(receipt_text: str) -> list[dict]:
+    """Extract receipt data from text without an image, supporting single or multiple transactions."""
     try:
         print("Processing receipt from text input...")
         categories = get_firefly_categories()
@@ -415,50 +523,81 @@ async def extract_receipt_data_from_text(receipt_text: str):
             print("Using default budgets due to Firefly III connection issues")
 
         prompt = build_extraction_prompt(categories, budgets, receipt_text=receipt_text)
-        receipt = await _run_llm_extraction(prompt, image=None, image_base64=None)
-        if not receipt.time:
-            receipt.time = extract_time_from_date_string(receipt.date)
-        receipt.date = normalize_date(receipt.date)
-        receipt.time = normalize_time(receipt.time)
-        clean_card = clean_card_digits(receipt.card_last_four)
+        result = await _run_llm_extraction(
+            prompt, image=None, image_base64=None, response_model=MultiReceiptModel
+        )
 
-        # Parse splits if split payment
-        parsed_splits = []
-        is_split = bool(getattr(receipt, "is_split_payment", False))
-        raw_splits = getattr(receipt, "splits", None) or []
-        for sp in raw_splits:
-            sp_card = clean_card_digits(sp.card_last_four)
-            try:
-                sp_amt = float(sp.amount)
-            except (ValueError, TypeError):
-                sp_amt = 0.0
-            parsed_splits.append({
-                "payment_method": (sp.payment_method or "").strip().lower(),
-                "amount": sp_amt,
-                "card_last_four": sp_card or "",
+        raw_txs: list[ReceiptModel] = []
+        if isinstance(result, MultiReceiptModel):
+            raw_txs = result.transactions
+        elif isinstance(result, ReceiptModel):
+            raw_txs = [result]
+        elif isinstance(result, list):
+            raw_txs = result
+
+        if not raw_txs:
+            raw_txs = [
+                ReceiptModel(
+                    date=datetime.now().strftime("%Y-%m-%d"),
+                    time=None,
+                    amount=0.0,
+                    store_name="Unknown Store",
+                    description=receipt_text[:100].strip() or "Pasted transaction",
+                    category=categories[0] if categories else "Groceries",
+                    budget=budgets[0] if budgets else "Monthly",
+                )
+            ]
+
+        extracted_list = []
+        for receipt in raw_txs:
+            if not receipt.time:
+                receipt.time = extract_time_from_date_string(receipt.date)
+            receipt.date = normalize_date(receipt.date)
+            receipt.time = normalize_time(receipt.time)
+            clean_card = clean_card_digits(receipt.card_last_four)
+
+            # Parse splits if split payment
+            parsed_splits = []
+            is_split = bool(getattr(receipt, "is_split_payment", False))
+            raw_splits = getattr(receipt, "splits", None) or []
+            for sp in raw_splits:
+                sp_card = clean_card_digits(getattr(sp, "card_last_four", None))
+                try:
+                    sp_amt = float(getattr(sp, "amount", 0.0))
+                except (ValueError, TypeError):
+                    sp_amt = 0.0
+                sp_method = (getattr(sp, "payment_method", "") or "").strip().lower()
+                parsed_splits.append({
+                    "payment_method": sp_method,
+                    "amount": sp_amt,
+                    "card_last_four": sp_card or "",
+                })
+            if len(parsed_splits) >= 2:
+                is_split = True
+
+            extracted_list.append({
+                "date": receipt.date,
+                "time": receipt.time or "",
+                "amount": receipt.amount,
+                "store_name": receipt.store_name,
+                "description": receipt.description,
+                "category": receipt.category,
+                "budget": receipt.budget,
+                "payment_method": (receipt.payment_method or "").strip().lower(),
+                "card_last_four": clean_card or "",
+                "is_split_payment": is_split,
+                "splits": parsed_splits,
+                "available_categories": categories,
+                "available_budgets": budgets,
+                "image_base64": "",
             })
-        if len(parsed_splits) >= 2:
-            is_split = True
 
-        return {
-            "date": receipt.date,
-            "time": receipt.time or "",
-            "amount": receipt.amount,
-            "store_name": receipt.store_name,
-            "description": receipt.description,
-            "category": receipt.category,
-            "budget": receipt.budget,
-            "payment_method": (receipt.payment_method or "").strip().lower(),
-            "card_last_four": clean_card or "",
-            "is_split_payment": is_split,
-            "splits": parsed_splits,
-            "available_categories": categories,
-            "available_budgets": budgets,
-            "image_base64": "",
-        }
+        print(f"Extracted {len(extracted_list)} transaction(s) from text.")
+        return extracted_list
     except Exception as e:
         print(f"Unexpected error in extract_receipt_data_from_text: {str(e)}")
         raise
+
 
 
 async def extract_receipt_data(

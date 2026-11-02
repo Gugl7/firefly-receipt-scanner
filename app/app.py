@@ -164,15 +164,73 @@ async def extract_receipt(
         cleaned_text = receipt_text.strip() if receipt_text else ""
         if cleaned_text:
             print("Processing receipt from text input...")
-            extracted_data = await extract_receipt_data_from_text(cleaned_text)
-            extracted_data = enrich_extracted_data_accounts(
-                extracted_data, asset_accounts, source_account
-            )
+            extracted_txs = await extract_receipt_data_from_text(cleaned_text)
+            if not isinstance(extracted_txs, list):
+                extracted_txs = [extracted_txs]
 
+            if not extracted_txs:
+                return templates.TemplateResponse(
+                    "error.html",
+                    {
+                        "request": request,
+                        "error_message": "Could not extract any transactions from the provided text. Please verify the text and try again.",
+                    },
+                )
+
+            # If multiple transactions were extracted, launch a batch session
+            if len(extracted_txs) > 1:
+                print(
+                    f"Multi-transaction text input: extracted {len(extracted_txs)} transactions."
+                )
+                batch_id = str(uuid.uuid4())
+                batch_dir = os.path.join(tempfile.gettempdir(), "receipt_scanner", batch_id)
+                os.makedirs(batch_dir, exist_ok=True)
+
+                with open(os.path.join(batch_dir, "batch_type.txt"), "w") as f_type:
+                    f_type.write("text")
+
+                # Enrich all transactions with account mappings and persist as {idx}.json
+                enriched_txs = []
+                for idx, tx_data in enumerate(extracted_txs):
+                    enriched = enrich_extracted_data_accounts(
+                        tx_data, asset_accounts, source_account
+                    )
+                    enriched_txs.append(enriched)
+                    target_json = os.path.join(batch_dir, f"{idx}.json")
+                    with open(target_json, "w", encoding="utf-8") as f_out:
+                        json.dump(enriched, f_out, ensure_ascii=False)
+
+                first_tx = enriched_txs[0]
+                duplicates = check_duplicate_transactions(
+                    first_tx.get("date", ""),
+                    first_tx.get("amount", 0.0),
+                    first_tx.get("store_name", ""),
+                )
+                submission_id = str(uuid.uuid4())
+
+                return templates.TemplateResponse(
+                    "review.html",
+                    {
+                        "request": request,
+                        "extracted_data": first_tx,
+                        "batch_id": batch_id,
+                        "current_index": 0,
+                        "batch_total": len(enriched_txs),
+                        "created_count": 0,
+                        "asset_accounts": asset_accounts,
+                        "duplicates": duplicates,
+                        "submission_id": submission_id,
+                    },
+                )
+
+            # Single transaction mode
+            single_tx = enrich_extracted_data_accounts(
+                extracted_txs[0], asset_accounts, source_account
+            )
             duplicates = check_duplicate_transactions(
-                extracted_data.get("date", ""),
-                extracted_data.get("amount", 0.0),
-                extracted_data.get("store_name", ""),
+                single_tx.get("date", ""),
+                single_tx.get("amount", 0.0),
+                single_tx.get("store_name", ""),
             )
             submission_id = str(uuid.uuid4())
 
@@ -180,7 +238,7 @@ async def extract_receipt(
                 "review.html",
                 {
                     "request": request,
-                    "extracted_data": extracted_data,
+                    "extracted_data": single_tx,
                     "batch_id": "",
                     "current_index": 0,
                     "batch_total": 1,
