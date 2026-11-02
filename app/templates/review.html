@@ -97,9 +97,10 @@
     </div>
     
     <div class="form-group">
-        <label for="budget">Budget:</label>
-        <select id="budget" name="budget" required>
-            {% for budget in extracted_data.available_budgets %}
+        <label for="budget">Budget (optional):</label>
+        <select id="budget" name="budget">
+            <option value="" {% if not extracted_data.budget or extracted_data.budget|lower in ['none', 'null', ''] %}selected{% endif %}>None (No budget)</option>
+            {% for budget in extracted_data.available_budgets if budget and budget|lower not in ['none', 'null'] %}
             <option value="{{ budget }}" {% if budget == extracted_data.budget %}selected{% endif %}>{{ budget }}</option>
             {% endfor %}
         </select>

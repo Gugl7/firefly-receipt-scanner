@@ -368,8 +368,8 @@ def build_extraction_prompt(
             + ", ".join(categories)
             + ")\n"
             "3) budget (choose the best matching budget from: "
-            + ", ".join(budgets)
-            + ")\n"
+            + (", ".join(budgets) if budgets else "None")
+            + ", or null if no budget applies or none is needed)\n"
             "4) store_name (destination account / store or merchant name)\n"
             "5) description (brief description of the transaction)\n"
             "6) date (in YYYY-MM-DD format). Today's date is "
@@ -395,7 +395,7 @@ def build_extraction_prompt(
             '      "store_name": "string",\n'
             '      "description": "string",\n'
             '      "category": "string",\n'
-            '      "budget": "string",\n'
+            '      "budget": "string | null",\n'
             '      "payment_method": "card | cash | split | other | null",\n'
             '      "card_last_four": "1234 | null",\n'
             '      "is_split_payment": false,\n'
@@ -414,8 +414,8 @@ def build_extraction_prompt(
         + ", ".join(categories)
         + ")\n"
         "3) budget (choose the best matching budget from: "
-        + ", ".join(budgets)
-        + ")\n"
+        + (", ".join(budgets) if budgets else "None")
+        + ", or null if no budget applies or none is needed)\n"
         "4) store_name (destination account / store or merchant name)\n"
         "5) description (brief description of the transaction)\n"
         "6) date (in YYYY-MM-DD format). Today's date is "
@@ -436,7 +436,7 @@ def build_extraction_prompt(
         '  "store_name": "string",\n'
         '  "description": "string",\n'
         '  "category": "string",\n'
-        '  "budget": "string",\n'
+        '  "budget": "string | null",\n'
         '  "payment_method": "card | cash | split | other | null",\n'
         '  "card_last_four": "1234 | null",\n'
         '  "is_split_payment": false,\n'
@@ -575,6 +575,12 @@ async def extract_receipt_data_from_text(receipt_text: str) -> list[dict]:
             if len(parsed_splits) >= 2:
                 is_split = True
 
+            clean_budget = (
+                receipt.budget.strip()
+                if receipt.budget and receipt.budget.strip().lower() not in ("none", "null")
+                else ""
+            )
+
             extracted_list.append({
                 "date": receipt.date,
                 "time": receipt.time or "",
@@ -582,7 +588,7 @@ async def extract_receipt_data_from_text(receipt_text: str) -> list[dict]:
                 "store_name": receipt.store_name,
                 "description": receipt.description,
                 "category": receipt.category,
-                "budget": receipt.budget,
+                "budget": clean_budget,
                 "payment_method": (receipt.payment_method or "").strip().lower(),
                 "card_last_four": clean_card or "",
                 "is_split_payment": is_split,
@@ -688,6 +694,12 @@ async def extract_receipt_data(
         if len(parsed_splits) >= 2:
             is_split = True
 
+        clean_budget = (
+            receipt.budget.strip()
+            if receipt.budget and receipt.budget.strip().lower() not in ("none", "null")
+            else ""
+        )
+
         # Return the extracted data as a dictionary
         extracted_data = {
             "date": receipt.date,
@@ -696,7 +708,7 @@ async def extract_receipt_data(
             "store_name": receipt.store_name,
             "description": receipt.description,
             "category": receipt.category,
-            "budget": receipt.budget,
+            "budget": clean_budget,
             "payment_method": (receipt.payment_method or "").strip().lower(),
             "card_last_four": clean_card or "",
             "is_split_payment": is_split,
@@ -720,6 +732,13 @@ async def create_transaction_from_data(
     receipt_data, source_account, image_bytes=None, filename="receipt.jpg"
 ):
     """Create a transaction in Firefly III using the provided data."""
+    raw_budget = receipt_data.get("budget")
+    clean_budget = (
+        raw_budget.strip()
+        if raw_budget and str(raw_budget).strip().lower() not in ("none", "null")
+        else None
+    )
+
     # Create a ReceiptModel object from the data
     receipt = ReceiptModel(
         date=receipt_data["date"],
@@ -728,7 +747,7 @@ async def create_transaction_from_data(
         store_name=receipt_data["store_name"],
         description=receipt_data["description"],
         category=receipt_data["category"],
-        budget=receipt_data["budget"],
+        budget=clean_budget,
     )
 
     # Check if this is a split payment across multiple accounts
@@ -755,7 +774,7 @@ async def create_transaction_from_data(
                 store_name=receipt.store_name,
                 description=split_desc,
                 category=receipt.category,
-                budget=receipt.budget,
+                budget=clean_budget,
             )
 
             try:

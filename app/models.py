@@ -38,7 +38,7 @@ class ReceiptModel(BaseModel):
     store_name: str
     description: str
     category: str
-    budget: str
+    budget: str | None = None
     payment_method: str | None = None
     card_last_four: str | None = None
     is_split_payment: bool = False

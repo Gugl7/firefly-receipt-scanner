@@ -257,6 +257,13 @@ def create_firefly_transaction(
         print(f"Invalid date format: {receipt.date}. Using current datetime instead.")
         formatted_date = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
 
+    raw_budget = getattr(receipt, "budget", None)
+    budget_name = None
+    if raw_budget:
+        clean_b = str(raw_budget).strip()
+        if clean_b and clean_b.lower() not in ("none", "null", ""):
+            budget_name = clean_b
+
     payload = {
         "transactions": [
             {
@@ -267,7 +274,7 @@ def create_firefly_transaction(
                 "destination_name": receipt.store_name,
                 "source_name": source_account,
                 "category_name": receipt.category,
-                "budget_name": receipt.budget,
+                "budget_name": budget_name,
                 "tags": tags if tags is not None else ["automated"],
             }
         ]

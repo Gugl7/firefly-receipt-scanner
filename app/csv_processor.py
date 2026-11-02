@@ -508,12 +508,14 @@ def parse_csv_transactions(
             chosen_cat = guess_category(tx_store, tx_desc, categories)
 
         # Budget
-        chosen_budget = budgets[0] if budgets else "Monthly"
+        chosen_budget = ""
         if raw_budget:
             for b in budgets:
                 if b.lower() == raw_budget.strip().lower():
                     chosen_budget = b
                     break
+            if not chosen_budget and raw_budget.strip().lower() not in ("none", "null"):
+                chosen_budget = raw_budget.strip()
 
         item_data = {
             "date": tx_date,

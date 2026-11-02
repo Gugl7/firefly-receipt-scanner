@@ -433,7 +433,7 @@ async def create_transaction(
     store_name: str = Form(...),
     description: str = Form(...),
     category: str = Form(...),
-    budget: str = Form(...),
+    budget: str = Form(""),
     source_account: str = Form(""),
     attach_receipt: str = Form(""),
     image_base64: str = Form(""),
@@ -527,6 +527,12 @@ async def create_transaction(
             if not source_account and parsed_splits:
                 source_account = parsed_splits[0]["account"]
 
+            clean_budget = (
+                budget.strip()
+                if budget and budget.strip().lower() not in ("none", "null")
+                else None
+            )
+
             receipt_payload = {
                 "date": date,
                 "time": time,
@@ -534,7 +540,7 @@ async def create_transaction(
                 "store_name": store_name,
                 "description": description,
                 "category": category,
-                "budget": budget,
+                "budget": clean_budget or "",
                 "source_account": source_account,
             }
             if len(parsed_splits) >= 2:
@@ -593,6 +599,12 @@ async def create_transaction(
             if not source_account and parsed_splits:
                 source_account = parsed_splits[0]["account"]
 
+            clean_budget = (
+                budget.strip()
+                if budget and budget.strip().lower() not in ("none", "null")
+                else None
+            )
+
             receipt_payload = {
                 "date": date,
                 "time": time,
@@ -600,7 +612,7 @@ async def create_transaction(
                 "store_name": store_name,
                 "description": description,
                 "category": category,
-                "budget": budget,
+                "budget": clean_budget or "",
                 "source_account": source_account,
             }
             if len(parsed_splits) >= 2:
