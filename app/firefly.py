@@ -20,12 +20,16 @@ def get_firefly_categories():
     try:
         response = requests.get(url, headers=headers, timeout=TIMEOUT)
         response.raise_for_status()
-        categories_data = response.json()["data"]
-        return [category["attributes"]["name"] for category in categories_data]
+        categories_data = response.json().get("data", [])
+        return [
+            category["attributes"]["name"]
+            for category in categories_data
+            if "attributes" in category and "name" in category["attributes"]
+        ]
     except requests.exceptions.Timeout:
         print("Request to Firefly III timed out when fetching categories")
         return []
-    except requests.exceptions.RequestException as e:
+    except Exception as e:
         print(f"Error fetching categories: {e}")
         return []
 
@@ -40,12 +44,16 @@ def get_firefly_budgets():
     try:
         response = requests.get(url, headers=headers, timeout=TIMEOUT)
         response.raise_for_status()
-        budgets_data = response.json()["data"]
-        return [budget["attributes"]["name"] for budget in budgets_data]
+        budgets_data = response.json().get("data", [])
+        return [
+            budget["attributes"]["name"]
+            for budget in budgets_data
+            if "attributes" in budget and "name" in budget["attributes"]
+        ]
     except requests.exceptions.Timeout:
         print("Request to Firefly III timed out when fetching budgets")
         return []
-    except requests.exceptions.RequestException as e:
+    except Exception as e:
         print(f"Error fetching budgets: {e}")
         return []
 
@@ -63,12 +71,16 @@ def get_firefly_asset_accounts():
     try:
         response = requests.get(url, headers=headers, params=params, timeout=TIMEOUT)
         response.raise_for_status()
-        accounts_data = response.json()["data"]
-        return [account["attributes"]["name"] for account in accounts_data]
+        accounts_data = response.json().get("data", [])
+        return [
+            account["attributes"]["name"]
+            for account in accounts_data
+            if "attributes" in account and "name" in account["attributes"]
+        ]
     except requests.exceptions.Timeout:
         print("Request to Firefly III timed out when fetching asset accounts")
         return []
-    except requests.exceptions.RequestException as e:
+    except Exception as e:
         print(f"Error fetching asset accounts: {e}")
         return []
 
