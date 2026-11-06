@@ -419,8 +419,8 @@ def build_extraction_prompt(
             "3) budget (choose the best matching budget from: "
             + (", ".join(budgets) if budgets else "None")
             + ", or null if no budget applies or none is needed)\n"
-            "4) store_name (destination account / store or merchant name)\n"
-            "5) description (brief description of the transaction)\n"
+            "4) store_name (destination account / store or merchant name; if unknown or not visible, use 'Unknown Store')\n"
+            "5) description (brief description of the transaction; if unknown, use 'Receipt')\n"
             "6) date (in YYYY-MM-DD format). Today's date is "
             + today_str
             + ".\n"
@@ -470,8 +470,8 @@ def build_extraction_prompt(
         "3) budget (choose the best matching budget from: "
         + (", ".join(budgets) if budgets else "None")
         + ", or null if no budget applies or none is needed)\n"
-        "4) store_name (destination account / store or merchant name)\n"
-        "5) description (brief description of the transaction)\n"
+        "4) store_name (destination account / store or merchant name; if unknown or not visible, use 'Unknown Store')\n"
+        "5) description (brief description of the transaction; if unknown, use 'Receipt')\n"
         "6) date (in YYYY-MM-DD format). Today's date is "
         + today_str
         + ".\n"

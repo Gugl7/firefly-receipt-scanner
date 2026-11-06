@@ -1,21 +1,32 @@
+from datetime import datetime
 import re
 
 try:
     from pydantic import BaseModel, field_validator
     _validator_dec = field_validator("amount", mode="before")
+    _validator_store = field_validator("store_name", mode="before")
+    _validator_desc = field_validator("description", mode="before")
+    _validator_date = field_validator("date", mode="before")
+    _validator_txtype = field_validator("transaction_type", mode="before")
 except ImportError:
     from pydantic import BaseModel, validator
-    _validator_dec = validator("amount", pre=True)
+    _validator_dec = validator("amount", pre=True, always=True)
+    _validator_store = validator("store_name", pre=True, always=True)
+    _validator_desc = validator("description", pre=True, always=True)
+    _validator_date = validator("date", pre=True, always=True)
+    _validator_txtype = validator("transaction_type", pre=True, always=True)
 
 
 class PaymentSplit(BaseModel):
     payment_method: str | None = None
-    amount: float
+    amount: float = 0.0
     card_last_four: str | None = None
 
     @_validator_dec
     @classmethod
     def parse_amount(cls, v):
+        if v is None or v == "":
+            return 0.0
         if isinstance(v, (int, float)):
             return float(v)
         if isinstance(v, str):
@@ -27,16 +38,19 @@ class PaymentSplit(BaseModel):
                     cleaned = cleaned.replace(",", "")
             elif "," in cleaned:
                 cleaned = cleaned.replace(",", ".")
-            return float(cleaned)
-        return v
+            try:
+                return float(cleaned)
+            except ValueError:
+                return 0.0
+        return 0.0
 
 
 class ReceiptModel(BaseModel):
-    date: str
+    date: str = ""
     time: str | None = None
-    amount: float
-    store_name: str
-    description: str
+    amount: float = 0.0
+    store_name: str = "Unknown Store"
+    description: str = "Receipt"
     category: str | None = None
     budget: str | None = None
     payment_method: str | None = None
@@ -46,9 +60,39 @@ class ReceiptModel(BaseModel):
     transaction_type: str = "withdrawal"
     destination_account: str | None = None
 
+    @_validator_store
+    @classmethod
+    def parse_store_name(cls, v):
+        if v is None or not str(v).strip() or str(v).strip().lower() in ("none", "null"):
+            return "Unknown Store"
+        return str(v).strip()
+
+    @_validator_desc
+    @classmethod
+    def parse_description(cls, v):
+        if v is None or not str(v).strip() or str(v).strip().lower() in ("none", "null"):
+            return "Receipt"
+        return str(v).strip()
+
+    @_validator_date
+    @classmethod
+    def parse_date(cls, v):
+        if v is None or not str(v).strip() or str(v).strip().lower() in ("none", "null"):
+            return datetime.now().strftime("%Y-%m-%d")
+        return str(v).strip()
+
+    @_validator_txtype
+    @classmethod
+    def parse_transaction_type(cls, v):
+        if v is None or not str(v).strip() or str(v).strip().lower() not in ("withdrawal", "transfer", "deposit"):
+            return "withdrawal"
+        return str(v).strip().lower()
+
     @_validator_dec
     @classmethod
     def parse_amount(cls, v):
+        if v is None or v == "":
+            return 0.0
         if isinstance(v, (int, float)):
             return float(v)
         if isinstance(v, str):
@@ -60,8 +104,11 @@ class ReceiptModel(BaseModel):
                     cleaned = cleaned.replace(",", "")
             elif "," in cleaned:
                 cleaned = cleaned.replace(",", ".")
-            return float(cleaned)
-        return v
+            try:
+                return float(cleaned)
+            except ValueError:
+                return 0.0
+        return 0.0
 
 
 class MultiReceiptModel(BaseModel):

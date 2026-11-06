@@ -91,6 +91,18 @@ def test_models_and_validators():
         "budget": "Monthly",
     })
     assert obj_multi.amount == 100.50
+
+    # Test None / null resilience for store_name, description, amount, date
+    null_rx = validate_model_obj(ReceiptModel, {
+        "date": None,
+        "amount": None,
+        "store_name": None,
+        "description": None,
+    })
+    assert null_rx.store_name == "Unknown Store"
+    assert null_rx.description == "Receipt"
+    assert null_rx.amount == 0.0
+    assert len(null_rx.date) == 10
     print("MultiReceiptModel and validator tests passed!")
 
 
@@ -185,6 +197,23 @@ def test_parse_multi_receipt_json():
     assert len(res5.transactions) == 1
     assert res5.transactions[0].store_name == "Pizzeria"
     assert res5.transactions[0].time == "18:45"
+
+    # 6. Null store_name or null fields from LLM
+    content_null = json.dumps({
+        "transactions": [
+            {
+                "date": "2026-11-06",
+                "amount": 25.50,
+                "store_name": None,
+                "description": None,
+            }
+        ]
+    })
+    res6 = parse_multi_receipt_json(content_null)
+    assert len(res6.transactions) == 1
+    assert res6.transactions[0].store_name == "Unknown Store"
+    assert res6.transactions[0].description == "Receipt"
+    assert res6.transactions[0].amount == 25.50
 
     print("parse_multi_receipt_json tests passed!")
 
