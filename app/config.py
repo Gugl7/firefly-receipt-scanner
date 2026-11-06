@@ -55,6 +55,24 @@ class Settings(BaseSettings):
             ),
         )
 
+        # Local OCR Configuration
+        ocr_enabled: bool = Field(
+            default=False,
+            validation_alias=AliasChoices(
+                "OCR_ENABLED", "ENABLE_OCR", "LOCAL_OCR_ENABLED", "LOCAL_OCR"
+            ),
+        )
+        ocr_engine: str = Field(
+            default="tesseract",
+            validation_alias=AliasChoices("OCR_ENGINE", "LOCAL_OCR_ENGINE"),
+        )
+        ocr_language: str = Field(
+            default="eng+deu",
+            validation_alias=AliasChoices(
+                "OCR_LANGUAGE", "TESSERACT_LANG", "TESSERACT_LANGUAGES"
+            ),
+        )
+
         model_config = {"env_file": ".env", "extra": "ignore"}
     else:
         llm_provider: str = "auto"
@@ -62,6 +80,9 @@ class Settings(BaseSettings):
         router_api_key: str = ""
         router_model: str | None = None
         account_card_mappings: str = ""
+        ocr_enabled: bool = False
+        ocr_engine: str = "tesseract"
+        ocr_language: str = "eng+deu"
 
         class Config:
             env_file = ".env"
@@ -86,6 +107,15 @@ class Settings(BaseSettings):
                 "ACCOUNT_CARD_MAPPINGS": "account_card_mappings",
                 "CARD_MAPPINGS": "account_card_mappings",
                 "ACCOUNT_MAPPINGS": "account_card_mappings",
+                "OCR_ENABLED": "ocr_enabled",
+                "ENABLE_OCR": "ocr_enabled",
+                "LOCAL_OCR_ENABLED": "ocr_enabled",
+                "LOCAL_OCR": "ocr_enabled",
+                "OCR_ENGINE": "ocr_engine",
+                "LOCAL_OCR_ENGINE": "ocr_engine",
+                "OCR_LANGUAGE": "ocr_language",
+                "TESSERACT_LANG": "ocr_language",
+                "TESSERACT_LANGUAGES": "ocr_language",
             }
             for k, v in list(values.items()):
                 if k in aliases and aliases[k] not in values:

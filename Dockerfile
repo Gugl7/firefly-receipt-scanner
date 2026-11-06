@@ -1,6 +1,13 @@
 FROM python:3.13-slim
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 
+# Install Tesseract OCR and language packs for local OCR
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    tesseract-ocr \
+    tesseract-ocr-eng \
+    tesseract-ocr-deu \
+    && rm -rf /var/lib/apt/lists/*
+
 ADD ./app /app/app
 WORKDIR /app
 

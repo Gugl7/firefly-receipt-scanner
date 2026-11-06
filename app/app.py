@@ -137,8 +137,14 @@ async def root(request: Request, cancel_batch: str | None = None):
         asset_accounts = ["Cash wallet"]
         print("Using default asset account due to Firefly III connection issues")
 
+    settings = get_settings()
     return templates.TemplateResponse(
-        "upload.html", {"request": request, "asset_accounts": asset_accounts}
+        "upload.html",
+        {
+            "request": request,
+            "asset_accounts": asset_accounts,
+            "ocr_enabled": getattr(settings, "ocr_enabled", False),
+        },
     )
 
 
@@ -154,6 +160,7 @@ async def extract_receipt(
     system_prompt: str = Form(default=""),
     csv_system_prompt: str = Form(default=""),
     text_system_prompt: str = Form(default=""),
+    use_ocr: str = Form(default=""),
 ):
     try:
         cleanup_old_batches()
@@ -436,13 +443,22 @@ async def extract_receipt(
             with open(os.path.join(batch_dir, "system_prompt.txt"), "w", encoding="utf-8") as f_sp:
                 f_sp.write(files_prompt)
 
+        effective_use_ocr = None
+        if use_ocr and use_ocr.strip():
+            effective_use_ocr = (use_ocr.strip().lower() in ("true", "1", "on", "yes"))
+            with open(os.path.join(batch_dir, "use_ocr.txt"), "w") as f_ocr:
+                f_ocr.write(str(effective_use_ocr))
+
         print(
             f"Created batch {batch_id} with {valid_count} receipts. Processing receipt 1 of {valid_count}..."
         )
 
         # Process the first image
         extracted_data = await extract_receipt_data(
-            first_bytes, filename=first_filename or "receipt_1.jpg", system_prompt=files_prompt
+            first_bytes,
+            filename=first_filename or "receipt_1.jpg",
+            system_prompt=files_prompt,
+            use_ocr=effective_use_ocr,
         )
         extracted_data = enrich_extracted_data_accounts(
             extracted_data, asset_accounts, source_account
@@ -738,8 +754,19 @@ async def create_transaction(
                             if os.path.exists(name_p):
                                 with open(name_p, "r", encoding="utf-8") as f_n:
                                     item_fname = f_n.read().strip() or item_fname
+                            batch_ocr = None
+                            ocr_flag = os.path.join(batch_dir, "use_ocr.txt")
+                            if os.path.exists(ocr_flag):
+                                try:
+                                    with open(ocr_flag, "r") as f_ocr:
+                                        batch_ocr = (f_ocr.read().strip() == "True")
+                                except Exception:
+                                    pass
                             item_data = await extract_receipt_data(
-                                item_bytes, filename=item_fname, system_prompt=batch_prompt
+                                item_bytes,
+                                filename=item_fname,
+                                system_prompt=batch_prompt,
+                                use_ocr=batch_ocr,
                             )
                         except Exception as e:
                             print(f"Error extracting data for item {rem_idx + 1}: {e}")
@@ -855,10 +882,20 @@ async def create_transaction(
                         except Exception:
                             pass
 
+                    batch_ocr = None
+                    ocr_flag = os.path.join(batch_dir, "use_ocr.txt")
+                    if os.path.exists(ocr_flag):
+                        try:
+                            with open(ocr_flag, "r") as f_ocr:
+                                batch_ocr = (f_ocr.read().strip() == "True")
+                        except Exception:
+                            pass
+
                     next_extracted_data = await extract_receipt_data(
                         next_bytes,
                         filename=next_filename or f"receipt_{next_index + 1}.jpg",
                         system_prompt=batch_prompt,
+                        use_ocr=batch_ocr,
                     )
                     asset_accounts = get_firefly_asset_accounts() or [source_account]
                     next_extracted_data = enrich_extracted_data_accounts(

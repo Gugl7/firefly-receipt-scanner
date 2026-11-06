@@ -12,4 +12,5 @@ dependencies = [
     "pillow>=11.1.0",
     "uvicorn>=0.34.0",
     "pypdfium2>=4.30.0",
+    "pytesseract>=0.3.10",
 ]

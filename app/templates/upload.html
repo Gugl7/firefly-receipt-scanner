@@ -21,6 +21,13 @@
             <div id="file-count-badge" class="file-count-badge" style="display: none;"></div>
         </div>
 
+        <div class="form-group checkbox-group" style="margin-top: 6px; margin-bottom: 16px;">
+            <label class="checkbox-label" style="display: flex; align-items: center; gap: 8px; font-weight: 500; cursor: pointer;">
+                <input type="checkbox" id="use_ocr" name="use_ocr" value="true" {% if ocr_enabled %}checked{% endif %}>
+                <span>⚡ <strong>Use local OCR</strong> (extract text locally with Tesseract to save tokens &amp; enable text-only models)</span>
+            </label>
+        </div>
+
         <div class="form-group">
             <label for="system_prompt">Custom LLM Instructions / System Prompt (Optional):</label>
             <textarea id="system_prompt" name="system_prompt" rows="2" placeholder="e.g. Focus on handwritten tip, dates are DD/MM/YYYY, store name is near the logo, split 50 cash 20 card..."></textarea>

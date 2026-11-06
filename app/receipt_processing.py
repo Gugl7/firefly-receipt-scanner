@@ -20,6 +20,7 @@ from .firefly import (
     get_firefly_categories,
 )
 from .image_utils import process_image
+from .ocr import run_local_ocr
 from .models import (
     CsvRefineResponse,
     CsvTransactionUpdate,
@@ -679,6 +680,7 @@ async def extract_receipt_data(
     file: UploadFile | bytes,
     filename: str | None = None,
     system_prompt: str | None = None,
+    use_ocr: bool | None = None,
 ):
     """Extract data from the receipt image without creating a transaction."""
     try:
@@ -735,10 +737,67 @@ async def extract_receipt_data(
             budgets = ["Monthly", "Weekly", "Other"]
             print("Using default budgets due to Firefly III connection issues")
 
-        prompt = build_extraction_prompt(categories, budgets, system_prompt=system_prompt)
-        receipt = await _run_llm_extraction(
-            prompt, image=image, image_base64=image_base64
+        # Check if local OCR is enabled
+        settings = get_settings()
+        effective_use_ocr = (
+            use_ocr if use_ocr is not None else getattr(settings, "ocr_enabled", False)
         )
+        ocr_text = None
+        if effective_use_ocr:
+            lang = getattr(settings, "ocr_language", "eng+deu")
+            print(f"Local OCR enabled. Extracting text locally (lang: {lang})...")
+            try:
+                ocr_text = run_local_ocr(
+                    image,
+                    raw_bytes=raw_bytes,
+                    is_pdf=is_pdf,
+                    language=lang,
+                )
+                if ocr_text and len(ocr_text.strip()) >= 15:
+                    print(
+                        f"Local OCR successfully extracted {len(ocr_text.strip())} characters."
+                    )
+                else:
+                    print(
+                        "Local OCR returned empty or insufficient text. Falling back to vision extraction."
+                    )
+                    ocr_text = None
+            except Exception as e:
+                print(f"Warning: Local OCR failed ({e}). Falling back to vision extraction.")
+                ocr_text = None
+
+        if ocr_text:
+            print("Sending OCR text to LLM (no image payload)...")
+            prompt = build_extraction_prompt(
+                categories, budgets, receipt_text=ocr_text, system_prompt=system_prompt
+            )
+            llm_res = await _run_llm_extraction(
+                prompt,
+                image=None,
+                image_base64=None,
+                settings=settings,
+                response_model=MultiReceiptModel,
+            )
+            if isinstance(llm_res, MultiReceiptModel) and llm_res.transactions:
+                receipt = llm_res.transactions[0]
+            elif isinstance(llm_res, ReceiptModel):
+                receipt = llm_res
+            else:
+                receipt = ReceiptModel(
+                    date=datetime.now().strftime("%Y-%m-%d"),
+                    amount=0.0,
+                    store_name="Unknown Store",
+                    description=ocr_text[:100].strip(),
+                    category=categories[0] if categories else "Groceries",
+                    budget=budgets[0] if budgets else "Monthly",
+                )
+        else:
+            prompt = build_extraction_prompt(
+                categories, budgets, system_prompt=system_prompt
+            )
+            receipt = await _run_llm_extraction(
+                prompt, image=image, image_base64=image_base64, settings=settings
+            )
 
         # Validate and format the date and time
         if not receipt.time:
