@@ -1,6 +1,7 @@
 import asyncio
 import base64
 import json
+import random
 import re
 import time
 from datetime import datetime
@@ -330,8 +331,13 @@ async def _extract_with_router(
 
     url = settings.router_chat_url
     timeout_secs = float(getattr(settings, "llm_timeout", 300.0))
+    endpoint_label = (
+        "local Ollama"
+        if ("11434" in url or "ollama" in url.lower())
+        else "LLM endpoint"
+    )
     print(
-        f"Sending request to 9router at {url} (model: {settings.effective_router_model}, timeout: {timeout_secs:.0f}s)..."
+        f"Sending request to {endpoint_label} at {url} (model: {settings.effective_router_model}, timeout: {timeout_secs:.0f}s)..."
     )
     async with httpx.AsyncClient(timeout=timeout_secs) as client:
         try:
@@ -362,16 +368,16 @@ async def _extract_with_router(
                 except httpx.HTTPStatusError as retry_err:
                     err_text = retry_err.response.text
                     print(
-                        f"9router HTTP error on retry: {retry_err.response.status_code} {err_text}"
+                        f"{endpoint_label} HTTP error on retry: {retry_err.response.status_code} {err_text}"
                     )
                     raise RuntimeError(
-                        f"9router HTTP {retry_err.response.status_code}: {err_text or retry_err.response.reason_phrase}"
+                        f"{endpoint_label} HTTP {retry_err.response.status_code}: {err_text or retry_err.response.reason_phrase}"
                     ) from retry_err
             elif isinstance(e, httpx.HTTPStatusError):
                 err_text = e.response.text
-                print(f"9router HTTP error: {e.response.status_code} {err_text}")
+                print(f"{endpoint_label} HTTP error: {e.response.status_code} {err_text}")
                 raise RuntimeError(
-                    f"9router HTTP {e.response.status_code}: {err_text or e.response.reason_phrase}"
+                    f"{endpoint_label} HTTP {e.response.status_code}: {err_text or e.response.reason_phrase}"
                 ) from e
             else:
                 raise
@@ -381,7 +387,7 @@ async def _extract_with_router(
                 "If your model is running on CPU or loading into memory, you can increase LLM_TIMEOUT in your .env (e.g. LLM_TIMEOUT=600)."
             ) from e
 
-    print("Received response from 9router")
+    print(f"Received response from {endpoint_label}")
     if response_model == MultiReceiptModel:
         return parse_multi_receipt_json(content)
     if response_model == CsvRefineResponse:
@@ -546,30 +552,86 @@ async def _run_llm_extraction(
     if settings is None:
         settings = get_settings()
 
-    if settings.effective_llm_provider == "9router":
+    primary_provider = settings.effective_llm_provider
+    fallback_enabled = getattr(settings, "llm_fallback_enabled", True)
+
+    async def _try_router() -> ReceiptModel | MultiReceiptModel:
         return await _extract_with_router(
             prompt, image_base64, settings, response_model=response_model
         )
 
-    if not settings.google_ai_api_key:
-        raise ValueError(
-            "GOOGLE_AI_API_KEY is not set. Please set GOOGLE_AI_API_KEY in your .env or configure ROUTER_BASE_URL to use 9router."
-        )
-    try:
+    async def _try_gemini() -> ReceiptModel | MultiReceiptModel:
+        nonlocal image
+        if not settings.google_ai_api_key:
+            raise ValueError(
+                "GOOGLE_AI_API_KEY is not set. Please set GOOGLE_AI_API_KEY in your .env or configure OLLAMA_BASE_URL / ROUTER_BASE_URL."
+            )
         print("Sending request to Gemini for analysis...")
         client = get_gemini_client()
         contents = [prompt]
+        if image is None and image_base64 is not None:
+            try:
+                from PIL import Image as PILImage
+                import io
+
+                image = PILImage.open(io.BytesIO(base64.b64decode(image_base64)))
+            except Exception:
+                image = None
         if image is not None:
             contents.append(image)
 
-        gemini_response = client.models.generate_content(
-            model=settings.gemini_model,
-            contents=contents,
-            config={
-                "response_mime_type": "application/json",
-                "response_schema": clean_schema_for_gemini(response_model),
-            },
-        )
+        clean_schema = clean_schema_for_gemini(response_model)
+
+        models_to_try = [settings.gemini_model]
+        for fallback in ("gemini-2.0-flash", "gemini-1.5-flash", "gemini-3.5-flash-lite"):
+            if fallback not in models_to_try:
+                models_to_try.append(fallback)
+
+        max_attempts = 4
+        delay = 1.5
+        gemini_response = None
+        current_model_idx = 0
+
+        for attempt in range(max_attempts):
+            target_model = models_to_try[current_model_idx]
+            try:
+                gemini_response = client.models.generate_content(
+                    model=target_model,
+                    contents=contents,
+                    config={
+                        "response_mime_type": "application/json",
+                        "response_schema": clean_schema,
+                    },
+                )
+                break
+            except Exception as e:
+                err_str = str(e).lower()
+                is_transient = (
+                    "503" in err_str
+                    or "unavailable" in err_str
+                    or "high demand" in err_str
+                    or "429" in err_str
+                    or "resource_exhausted" in err_str
+                    or "quota" in err_str
+                    or "overloaded" in err_str
+                )
+                if is_transient and attempt < max_attempts - 1:
+                    sleep_time = delay + random.uniform(0.3, 1.0)
+                    if attempt >= 1 and current_model_idx + 1 < len(models_to_try):
+                        current_model_idx += 1
+                        next_model = models_to_try[current_model_idx]
+                        print(
+                            f"Gemini API high demand on '{target_model}'. Failing over to '{next_model}' in {sleep_time:.2f}s (Attempt {attempt + 1}/{max_attempts})..."
+                        )
+                    else:
+                        print(
+                            f"Gemini API temporary error ({e}). Retrying '{target_model}' in {sleep_time:.2f}s (Attempt {attempt + 1}/{max_attempts})..."
+                        )
+                    await asyncio.sleep(sleep_time)
+                    delay *= 1.8
+                else:
+                    raise e
+
         print("Received response from Gemini")
         parsed = gemini_response.parsed
         if parsed is None and hasattr(gemini_response, "text") and gemini_response.text:
@@ -585,13 +647,48 @@ async def _run_llm_extraction(
                 return validate_model_obj(CsvRefineResponse, parsed)
             return validate_model_obj(ReceiptModel, parsed)
         return parsed
+
+    if primary_provider == "9router":
+        try:
+            return await _try_router()
+        except Exception as router_err:
+            if fallback_enabled and settings.google_ai_api_key:
+                print(
+                    f"Warning: Local Ollama / LLM endpoint failed ({router_err}). Automatically falling back to Google Gemini ({settings.gemini_model})..."
+                )
+                try:
+                    return await _try_gemini()
+                except Exception as gemini_err:
+                    print(f"Fallback to Gemini also failed: {gemini_err}")
+                    raise router_err from gemini_err
+            raise router_err
+
+    # Primary provider is Gemini
+    try:
+        return await _try_gemini()
     except Exception as e:
         print(f"Error during Gemini analysis: {str(e)}")
         print(f"Error type: {type(e)}")
+
+        if fallback_enabled and settings.router_base_url:
+            print(
+                f"Warning: Google Gemini extraction failed ({e}). Automatically falling back to local Ollama at {settings.router_base_url} (model: {settings.effective_router_model})..."
+            )
+            try:
+                return await _try_router()
+            except Exception as router_err:
+                print(f"Fallback to local Ollama also failed: {router_err}")
+
         if "timeout" in str(e).lower():
             raise TimeoutError(
                 "The image processing timed out. Please try again with a smaller or clearer image."
             )
+        if "503" in str(e) or "unavailable" in str(e).lower() or "high demand" in str(e).lower():
+            raise RuntimeError(
+                f"Google Gemini is currently experiencing a high demand spike on '{settings.gemini_model}'. "
+                "The server retried automatically with backoff, but Google's API is still busy. "
+                "Please try again in a few moments, or configure OLLAMA_BASE_URL in your .env for local fallback."
+            ) from e
         raise e
 
 

@@ -25,6 +25,7 @@ from app.config import Settings
 from app.models import ReceiptModel
 from app.receipt_processing import (
     _extract_with_router,
+    _run_llm_extraction,
     extract_json_str,
     normalize_date,
     parse_receipt_json,
@@ -90,6 +91,43 @@ def test_settings():
         ROUTER_BASE_URL="http://localhost:20128/v1",
     )
     assert s.effective_llm_provider == "gemini"
+
+    # 6. Ollama configuration and aliases
+    s_ollama = Settings(
+        firefly_iii_url="http://firefly.local",
+        firefly_iii_token="token123",
+        OLLAMA_BASE_URL="http://192.168.0.58:11434",
+        OLLAMA_MODEL="qwen2.5:3b",
+        LLM_FALLBACK_ENABLED=True,
+    )
+    assert s_ollama.router_base_url == "http://192.168.0.58:11434"
+    assert s_ollama.router_chat_url == "http://192.168.0.58:11434/v1/chat/completions"
+    assert s_ollama.effective_router_model == "qwen2.5:3b"
+    assert s_ollama.effective_llm_provider == "9router"
+    assert s_ollama.llm_fallback_enabled is True
+
+    # 7. Dual configuration (Gemini primary + Ollama fallback)
+    s_dual = Settings(
+        firefly_iii_url="http://firefly.local",
+        firefly_iii_token="token123",
+        google_ai_api_key="AIzaSyDummyKey",
+        OLLAMA_BASE_URL="http://192.168.0.58:11434/v1",
+        OLLAMA_MODEL="qwen2.5:7b",
+    )
+    # When both are present and LLM_PROVIDER is not set, prefer gemini as primary
+    assert s_dual.effective_llm_provider == "gemini"
+    assert s_dual.effective_router_model == "qwen2.5:7b"
+    assert s_dual.llm_fallback_enabled is True
+
+    # 8. LLM_PROVIDER=ollama or local explicitly sets 9router
+    s_ollama_explicit = Settings(
+        firefly_iii_url="http://firefly.local",
+        firefly_iii_token="token123",
+        LLM_PROVIDER="ollama",
+        google_ai_api_key="AIzaSyDummyKey",
+        OLLAMA_BASE_URL="http://192.168.0.58:11434/v1",
+    )
+    assert s_ollama_explicit.effective_llm_provider == "9router"
 
     print("Settings tests passed!")
 
@@ -275,9 +313,119 @@ def test_extract_with_router():
     asyncio.run(_run())
 
 
+def test_llm_fallback():
+    print("Testing LLM fallback...")
+
+    async def _run():
+        with patch("asyncio.sleep", new_callable=AsyncMock):
+            # Case 1: Gemini fails with 503 -> Falls back to Ollama
+            settings_gemini = Settings(
+                firefly_iii_url="http://firefly.local",
+                firefly_iii_token="token123",
+                google_ai_api_key="AIzaSyDummyKey",
+                OLLAMA_BASE_URL="http://192.168.0.58:11434/v1",
+                OLLAMA_MODEL="qwen2.5:3b",
+                LLM_FALLBACK_ENABLED=True,
+            )
+
+            mock_gemini_client = MagicMock()
+            mock_gemini_client.models.generate_content.side_effect = RuntimeError(
+                "503 UNAVAILABLE. This model is currently experiencing high demand."
+            )
+
+            ollama_receipt = ReceiptModel(
+                date="2026-11-06",
+                amount=42.0,
+                store_name="Ollama Fallback Market",
+                description="Fallback receipt",
+                category="Groceries",
+                budget="Monthly",
+            )
+
+            with patch("app.receipt_processing.get_gemini_client", return_value=mock_gemini_client):
+                with patch(
+                    "app.receipt_processing._extract_with_router",
+                    new_callable=AsyncMock,
+                    return_value=ollama_receipt,
+                ) as mock_router:
+                    res = await _run_llm_extraction(
+                        "Test prompt",
+                        settings=settings_gemini,
+                    )
+                    assert res.store_name == "Ollama Fallback Market"
+                    assert res.amount == 42.0
+                    assert mock_router.called, "Expected _extract_with_router to be called on fallback"
+
+            # Case 2: Primary is Ollama -> Ollama fails -> Falls back to Gemini
+            settings_ollama = Settings(
+                firefly_iii_url="http://firefly.local",
+                firefly_iii_token="token123",
+                LLM_PROVIDER="ollama",
+                google_ai_api_key="AIzaSyDummyKey",
+                OLLAMA_BASE_URL="http://192.168.0.58:11434/v1",
+                LLM_FALLBACK_ENABLED=True,
+            )
+
+            mock_gemini_resp = MagicMock()
+            mock_gemini_resp.parsed = None
+            mock_gemini_resp.text = json.dumps(
+                {
+                    "date": "2026-11-06",
+                    "amount": 99.0,
+                    "store_name": "Gemini Fallback Store",
+                    "description": "Gemini fallback receipt",
+                    "category": "Groceries",
+                    "budget": "Monthly",
+                }
+            )
+            mock_gemini_client2 = MagicMock()
+            mock_gemini_client2.models.generate_content.return_value = mock_gemini_resp
+
+            with patch(
+                "app.receipt_processing._extract_with_router",
+                new_callable=AsyncMock,
+                side_effect=RuntimeError("Connection refused to Ollama"),
+            ):
+                with patch("app.receipt_processing.get_gemini_client", return_value=mock_gemini_client2):
+                    res2 = await _run_llm_extraction(
+                        "Test prompt",
+                        settings=settings_ollama,
+                    )
+                    assert res2.store_name == "Gemini Fallback Store"
+                    assert res2.amount == 99.0
+
+            # Case 3: Fallback disabled -> Gemini failure raises without calling router
+            settings_no_fallback = Settings(
+                firefly_iii_url="http://firefly.local",
+                firefly_iii_token="token123",
+                google_ai_api_key="AIzaSyDummyKey",
+                OLLAMA_BASE_URL="http://192.168.0.58:11434/v1",
+                LLM_FALLBACK_ENABLED=False,
+            )
+
+            with patch("app.receipt_processing.get_gemini_client", return_value=mock_gemini_client):
+                with patch(
+                    "app.receipt_processing._extract_with_router",
+                    new_callable=AsyncMock,
+                    return_value=ollama_receipt,
+                ) as mock_router_disabled:
+                    caught = False
+                    try:
+                        await _run_llm_extraction("Test prompt", settings=settings_no_fallback)
+                    except Exception:
+                        caught = True
+                    assert caught, "Expected exception when fallback is disabled"
+                    assert not mock_router_disabled.called, "Router should not be called when fallback is disabled"
+
+        print("LLM fallback tests passed!")
+
+    asyncio.run(_run())
+
+
 if __name__ == "__main__":
     test_settings()
     test_models()
     test_date_and_json_parsing()
     test_extract_with_router()
+    test_llm_fallback()
     print("\nALL TESTS PASSED SUCCESSFULLY!")
