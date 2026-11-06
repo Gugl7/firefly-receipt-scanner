@@ -103,6 +103,21 @@ def test_models_and_validators():
     assert null_rx.description == "Receipt"
     assert null_rx.amount == 0.0
     assert len(null_rx.date) == 10
+
+    # Test clean_schema_for_gemini strips all 'default' keys for Gemini API compatibility
+    from app.receipt_processing import clean_schema_for_gemini
+    for model_class in (ReceiptModel, MultiReceiptModel):
+        cleaned_schema = clean_schema_for_gemini(model_class)
+        def _check_no_defaults(d):
+            if isinstance(d, dict):
+                assert "default" not in d, f"Found default in {model_class} schema: {d}"
+                for val in d.values():
+                    _check_no_defaults(val)
+            elif isinstance(d, list):
+                for item in d:
+                    _check_no_defaults(item)
+        _check_no_defaults(cleaned_schema)
+
     print("MultiReceiptModel and validator tests passed!")
 
 

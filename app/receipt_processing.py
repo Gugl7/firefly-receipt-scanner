@@ -507,6 +507,35 @@ def build_extraction_prompt(
     return prompt
 
 
+def clean_schema_for_gemini(model_cls):
+    """
+    Generate a JSON schema dict for Gemini API with unsupported keys removed.
+    The Gemini API explicitly rejects schemas containing 'default' attributes.
+    """
+    if hasattr(model_cls, "model_json_schema"):
+        raw_schema = model_cls.model_json_schema()
+    elif hasattr(model_cls, "schema"):
+        raw_schema = model_cls.schema()
+    elif isinstance(model_cls, dict):
+        raw_schema = model_cls
+    else:
+        return model_cls
+
+    def _strip(d):
+        if isinstance(d, dict):
+            cleaned = {}
+            for k, v in d.items():
+                if k == "default":
+                    continue
+                cleaned[k] = _strip(v)
+            return cleaned
+        elif isinstance(d, list):
+            return [_strip(x) for x in d]
+        return d
+
+    return _strip(raw_schema)
+
+
 async def _run_llm_extraction(
     prompt: str,
     image=None,
@@ -538,7 +567,7 @@ async def _run_llm_extraction(
             contents=contents,
             config={
                 "response_mime_type": "application/json",
-                "response_schema": response_model,
+                "response_schema": clean_schema_for_gemini(response_model),
             },
         )
         print("Received response from Gemini")
@@ -549,6 +578,12 @@ async def _run_llm_extraction(
             if response_model == CsvRefineResponse:
                 return parse_csv_refine_json(gemini_response.text)
             return parse_receipt_json(gemini_response.text)
+        elif isinstance(parsed, dict):
+            if response_model == MultiReceiptModel:
+                return validate_model_obj(MultiReceiptModel, parsed)
+            if response_model == CsvRefineResponse:
+                return validate_model_obj(CsvRefineResponse, parsed)
+            return validate_model_obj(ReceiptModel, parsed)
         return parsed
     except Exception as e:
         print(f"Error during Gemini analysis: {str(e)}")
