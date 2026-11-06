@@ -85,6 +85,52 @@ def get_firefly_asset_accounts():
         return []
 
 
+def ensure_firefly_asset_account(account_name: str) -> bool:
+    """
+    Ensure an asset account exists in Firefly III, creating it if necessary.
+    Useful when transferring to a friend or tracking reimbursements.
+    """
+    if not account_name or not str(account_name).strip():
+        return False
+    clean_name = str(account_name).strip()
+    try:
+        existing = get_firefly_asset_accounts()
+        if any(a.strip().lower() == clean_name.lower() for a in existing):
+            return True
+    except Exception as e:
+        print(f"Warning: Failed to check existing asset accounts: {e}")
+
+    settings = get_settings()
+    if not settings.firefly_iii_url or not settings.firefly_iii_token:
+        return False
+
+    url = urljoin(settings.firefly_api_url, "accounts")
+    headers = {
+        "Authorization": f"Bearer {settings.firefly_iii_token}",
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "name": clean_name,
+        "type": "asset",
+    }
+    try:
+        response = requests.post(url, headers=headers, json=payload, timeout=TIMEOUT)
+        if response.status_code in (200, 201):
+            print(f"Created new asset account in Firefly III: {clean_name}")
+            return True
+        elif response.status_code == 422:
+            # Might already exist or validation warning
+            print(f"Asset account '{clean_name}' creation returned 422 (may already exist).")
+            return True
+        else:
+            print(f"Failed to create asset account '{clean_name}': {response.status_code} {response.text}")
+            return False
+    except Exception as e:
+        print(f"Error ensuring asset account '{clean_name}': {e}")
+        return False
+
+
 def check_duplicate_transactions(
     date_str: str,
     amount: float,
@@ -324,6 +370,10 @@ def create_firefly_transaction(
             raise ValueError(
                 f"Source and destination accounts cannot be the same for a transfer ({source_account})."
             )
+        try:
+            ensure_firefly_asset_account(effective_dest)
+        except Exception as e:
+            print(f"Warning: Could not auto-ensure asset account '{effective_dest}': {e}")
         tx_data = {
             "type": "transfer",
             "date": formatted_date,

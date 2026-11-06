@@ -591,10 +591,18 @@ async def create_transaction(
                                     sp_amt = float(sp.get("amount", 0.0) or 0.0)
                                 except (ValueError, TypeError):
                                     sp_amt = 0.0
+                                sp_type = (sp.get("split_type") or sp.get("type") or "withdrawal").strip().lower()
                                 sp_acc = (sp.get("account") or "").strip()
-                                if sp_amt > 0 and sp_acc:
+                                sp_dest = (sp.get("destination_account") or sp.get("dest_account") or "").strip()
+                                sp_desc = (sp.get("description") or "").strip()
+                                sp_cat = (sp.get("category") or "").strip()
+                                if sp_amt > 0:
                                     parsed_splits.append({
+                                        "split_type": sp_type,
                                         "account": sp_acc,
+                                        "destination_account": sp_dest,
+                                        "description": sp_desc,
+                                        "category": sp_cat,
                                         "amount": sp_amt,
                                         "payment_method": sp.get("payment_method", ""),
                                         "card_last_four": sp.get("card_last_four", ""),
@@ -603,7 +611,12 @@ async def create_transaction(
                     print(f"Warning: Failed to parse split_payload: {e}")
 
             if not source_account and parsed_splits:
-                source_account = parsed_splits[0]["account"]
+                for sp in parsed_splits:
+                    if sp.get("account") and sp.get("split_type") != "transfer":
+                        source_account = sp["account"]
+                        break
+                if not source_account and parsed_splits:
+                    source_account = parsed_splits[0].get("account") or ""
 
             clean_category = (
                 category.strip()
@@ -671,10 +684,18 @@ async def create_transaction(
                                     sp_amt = float(sp.get("amount", 0.0) or 0.0)
                                 except (ValueError, TypeError):
                                     sp_amt = 0.0
+                                sp_type = (sp.get("split_type") or sp.get("type") or "withdrawal").strip().lower()
                                 sp_acc = (sp.get("account") or "").strip()
-                                if sp_amt > 0 and sp_acc:
+                                sp_dest = (sp.get("destination_account") or sp.get("dest_account") or "").strip()
+                                sp_desc = (sp.get("description") or "").strip()
+                                sp_cat = (sp.get("category") or "").strip()
+                                if sp_amt > 0:
                                     parsed_splits.append({
+                                        "split_type": sp_type,
                                         "account": sp_acc,
+                                        "destination_account": sp_dest,
+                                        "description": sp_desc,
+                                        "category": sp_cat,
                                         "amount": sp_amt,
                                         "payment_method": sp.get("payment_method", ""),
                                         "card_last_four": sp.get("card_last_four", ""),
@@ -683,7 +704,12 @@ async def create_transaction(
                     print(f"Warning: Failed to parse split_payload: {e}")
 
             if not source_account and parsed_splits:
-                source_account = parsed_splits[0]["account"]
+                for sp in parsed_splits:
+                    if sp.get("account") and sp.get("split_type") != "transfer":
+                        source_account = sp["account"]
+                        break
+                if not source_account and parsed_splits:
+                    source_account = parsed_splits[0].get("account") or ""
 
             clean_category = (
                 category.strip()

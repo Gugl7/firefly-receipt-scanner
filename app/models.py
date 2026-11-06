@@ -8,6 +8,7 @@ try:
     _validator_desc = field_validator("description", mode="before")
     _validator_date = field_validator("date", mode="before")
     _validator_txtype = field_validator("transaction_type", mode="before")
+    _validator_splittype = field_validator("split_type", mode="before")
 except ImportError:
     from pydantic import BaseModel, validator
     _validator_dec = validator("amount", pre=True, always=True)
@@ -15,12 +16,28 @@ except ImportError:
     _validator_desc = validator("description", pre=True, always=True)
     _validator_date = validator("date", pre=True, always=True)
     _validator_txtype = validator("transaction_type", pre=True, always=True)
+    _validator_splittype = validator("split_type", pre=True, always=True)
 
 
 class PaymentSplit(BaseModel):
+    split_type: str = "withdrawal"
     payment_method: str | None = None
     amount: float = 0.0
     card_last_four: str | None = None
+    account: str | None = None
+    destination_account: str | None = None
+    description: str | None = None
+    category: str | None = None
+
+    @_validator_splittype
+    @classmethod
+    def parse_split_type(cls, v):
+        if v is None or not str(v).strip():
+            return "withdrawal"
+        norm = str(v).strip().lower()
+        if norm in ("transfer", "friend", "owed", "debt", "reimbursement"):
+            return "transfer"
+        return "withdrawal"
 
     @_validator_dec
     @classmethod

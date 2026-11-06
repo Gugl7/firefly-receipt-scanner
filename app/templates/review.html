@@ -164,11 +164,11 @@
         <small class="helper-text">Select the receiving asset account for this transfer (e.g. Cash wallet for ATM withdrawals, or Savings).</small>
     </div>
 
-    <!-- Split Payment Toggle -->
+    <!-- Split Transaction Toggle -->
     <div class="form-group split-toggle-container" id="split-toggle-container" style="{% if extracted_data.transaction_type == 'transfer' %}display: none;{% endif %}">
         <label class="checkbox-label">
             <input type="checkbox" id="split_payment_checkbox" {% if extracted_data.is_split_payment %}checked{% endif %} onchange="toggleSplitPayment(this.checked)">
-            <span>✂️ <strong>Split Payment</strong> (paid with multiple accounts / cash &amp; card)</span>
+            <span>✂️ <strong>Split Transaction</strong> (split with friends / owed to me / multiple accounts)</span>
         </label>
         {% if extracted_data.is_split_payment %}
         <span class="account-detected-badge">⚡ Split detected on receipt</span>
@@ -179,8 +179,8 @@
     <div id="split-account-section" class="split-box" style="{% if not extracted_data.is_split_payment %}display: none;{% endif %}">
         <div class="split-header">
             <div>
-                <span class="split-title">Payment Splits</span>
-                <span class="split-subtitle">Distribute the total amount across multiple asset accounts</span>
+                <span class="split-title">Transaction Splits</span>
+                <span class="split-subtitle">Divide between your expenses and transfers for money paid for friends (tracked in Firefly III)</span>
             </div>
             <div id="split-balance-badge" class="split-balance-badge"></div>
         </div>
@@ -190,10 +190,16 @@
         </div>
 
         <div class="split-footer">
-            <button type="button" class="btn btn-secondary btn-sm" onclick="addSplitRow()">+ Add Split</button>
+            <button type="button" class="btn btn-secondary btn-sm" onclick="addSplitRow('withdrawal')">+ Add My Expense</button>
+            <button type="button" class="btn btn-secondary btn-sm" onclick="addSplitRow('transfer')">+ Add Friend / Transfer</button>
             <button type="button" class="btn btn-secondary btn-sm" onclick="autoBalanceSplits()" title="Adjust last split to match total">Auto-Balance</button>
         </div>
     </div>
+    <datalist id="asset-accounts-datalist">
+        {% for acc in asset_accounts %}
+        <option value="{{ acc }}"></option>
+        {% endfor %}
+    </datalist>
 
     <input type="hidden" name="split_payload" id="split_payload" value="">
     <input type="hidden" name="image_base64" value="{{ extracted_data.image_base64 }}">
@@ -333,36 +339,44 @@
         }
     }
 
-    function createSplitRowElement(selectedAccount, amount, method, card) {
+    function createSplitRowElement(splitType, account, amount, method, card, description, destAccount) {
         const row = document.createElement('div');
         row.className = 'split-row';
+        const type = (splitType || 'withdrawal').toLowerCase();
+        row.dataset.splitType = type;
 
         let optionsHtml = '';
         for (const acc of assetAccounts) {
-            const isSelected = acc === selectedAccount ? 'selected' : '';
+            const isSelected = acc === account ? 'selected' : '';
             optionsHtml += `<option value="${acc}" ${isSelected}>${acc}</option>`;
         }
 
-        let methodBadge = '';
-        if (method === 'cash') {
-            methodBadge = '<span class="split-method-pill">💵 Cash</span>';
-        } else if (card) {
-            methodBadge = `<span class="split-method-pill">💳 Card *${card}</span>`;
-        }
-
         const amtVal = (amount !== undefined && amount !== null && amount !== '') ? parseFloat(amount).toFixed(2) : '';
+        const descVal = description || '';
+        const destVal = destAccount || account || '';
 
         row.innerHTML = `
-            <div class="split-row-account">
-                <select class="split-account-select" onchange="onSplitChange()" required>
-                    ${optionsHtml}
+            <div class="split-row-type">
+                <select class="split-type-select" onchange="onSplitRowTypeChange(this)" title="Choose if this is your expense or money paid for a friend">
+                    <option value="withdrawal" ${type === 'withdrawal' ? 'selected' : ''}>💸 My Expense</option>
+                    <option value="transfer" ${type === 'transfer' ? 'selected' : ''}>🤝 Friend / Transfer</option>
                 </select>
+            </div>
+            <div class="split-row-account">
+                <div class="split-acc-expense" style="${type === 'withdrawal' ? '' : 'display: none;'}">
+                    <select class="split-account-select" onchange="onSplitChange()" title="Source account for expense">
+                        ${optionsHtml}
+                    </select>
+                </div>
+                <div class="split-acc-transfer" style="${type === 'transfer' ? '' : 'display: none;'}">
+                    <input type="text" list="asset-accounts-datalist" class="split-friend-input" value="${destVal}" placeholder="Friend account (e.g. Bob)" oninput="onSplitChange()" title="Friend's asset account or reimbursement account">
+                </div>
+            </div>
+            <div class="split-row-desc">
+                <input type="text" class="split-desc-input" value="${descVal}" placeholder="${type === 'transfer' ? 'e.g. Paid for Bob' : 'e.g. My share'}" oninput="onSplitChange()" title="Optional description for this split">
             </div>
             <div class="split-row-amount">
                 <input type="number" step="0.01" min="0.01" class="split-amount-input" value="${amtVal}" placeholder="0.00" oninput="onSplitChange()" required>
-            </div>
-            <div class="split-row-method">
-                ${methodBadge}
             </div>
             <div class="split-row-remove">
                 <button type="button" class="btn-remove-split" onclick="removeSplitRow(this)" title="Remove split">✕</button>
@@ -371,14 +385,42 @@
         return row;
     }
 
-    function addSplitRow(account, amount, method, card) {
+    function onSplitRowTypeChange(select) {
+        const row = select.closest('.split-row');
+        const isTransfer = select.value === 'transfer';
+        row.dataset.splitType = select.value;
+        const expDiv = row.querySelector('.split-acc-expense');
+        const trfDiv = row.querySelector('.split-acc-transfer');
+        if (expDiv) expDiv.style.display = isTransfer ? 'none' : 'block';
+        if (trfDiv) trfDiv.style.display = isTransfer ? 'block' : 'none';
+
+        const descInput = row.querySelector('.split-desc-input');
+        if (descInput) {
+            if (isTransfer) {
+                descInput.placeholder = 'e.g. Paid for Bob';
+                if (!descInput.value || descInput.value === 'My share') {
+                    const friendInput = row.querySelector('.split-friend-input');
+                    const fName = friendInput ? friendInput.value.trim() : '';
+                    descInput.value = fName ? `Paid for ${fName}` : 'Paid for friend';
+                }
+            } else {
+                descInput.placeholder = 'e.g. My share';
+                if (descInput.value.startsWith('Paid for')) {
+                    descInput.value = 'My share';
+                }
+            }
+        }
+        onSplitChange();
+    }
+
+    function addSplitRow(splitType, account, amount, method, card, description, destAccount) {
         const container = document.getElementById('split-rows');
         if (!container) return;
 
-        if (!account) {
-            const usedAccounts = Array.from(container.querySelectorAll('.split-account-select')).map(s => s.value);
-            const unused = assetAccounts.find(a => !usedAccounts.includes(a));
-            account = unused || assetAccounts[0] || 'Cash wallet';
+        splitType = splitType || 'withdrawal';
+        if (!account && splitType === 'withdrawal') {
+            const sourceSelect = document.getElementById('source_account');
+            account = (sourceSelect ? sourceSelect.value : '') || assetAccounts[0] || 'Cash wallet';
         }
 
         if (amount === undefined || amount === null || amount === '') {
@@ -391,7 +433,7 @@
             amount = remaining > 0 ? remaining : 0.00;
         }
 
-        const row = createSplitRowElement(account, amount, method, card);
+        const row = createSplitRowElement(splitType, account, amount, method, card, description, destAccount);
         container.appendChild(row);
         onSplitChange();
     }
@@ -414,17 +456,35 @@
         const splits = [];
 
         container.querySelectorAll('.split-row').forEach(row => {
-            const acc = row.querySelector('.split-account-select').value;
+            const type = row.querySelector('.split-type-select').value;
             const amt = parseFloat(row.querySelector('.split-amount-input').value) || 0;
+            const desc = (row.querySelector('.split-desc-input').value || '').trim();
             sum += amt;
-            splits.push({ account: acc, amount: amt });
+            if (type === 'transfer') {
+                const friendAcc = (row.querySelector('.split-friend-input').value || '').trim();
+                splits.push({
+                    split_type: 'transfer',
+                    account: friendAcc,
+                    destination_account: friendAcc,
+                    description: desc || (friendAcc ? `Paid for ${friendAcc}` : 'Paid for friend'),
+                    amount: amt
+                });
+            } else {
+                const acc = row.querySelector('.split-account-select').value;
+                splits.push({
+                    split_type: 'withdrawal',
+                    account: acc,
+                    description: desc || 'My share',
+                    amount: amt
+                });
+            }
         });
 
         const diff = total - sum;
 
         if (splits.length < 2) {
             badge.className = 'split-balance-badge split-unbalanced';
-            badge.innerHTML = '⚠️ Need at least 2 accounts';
+            badge.innerHTML = '⚠️ Need at least 2 splits';
         } else if (Math.abs(diff) < 0.009) {
             badge.className = 'split-balance-badge split-balanced';
             badge.innerHTML = '✓ Balanced (' + sum.toFixed(2) + ')';
@@ -473,14 +533,16 @@
             if (container && container.children.length === 0) {
                 if (initialSplits && initialSplits.length >= 2) {
                     initialSplits.forEach(sp => {
-                        addSplitRow(sp.account, sp.amount, sp.payment_method, sp.card_last_four);
+                        const spType = sp.split_type || sp.type || 'withdrawal';
+                        const spAcc = sp.account || '';
+                        const spDest = sp.destination_account || (spType === 'transfer' ? spAcc : '');
+                        addSplitRow(spType, spAcc, sp.amount, sp.payment_method, sp.card_last_four, sp.description, spDest);
                     });
                 } else {
                     const total = parseFloat(document.getElementById('amount').value) || 0;
                     const primaryAcc = (sourceSelect ? sourceSelect.value : '') || assetAccounts[0] || 'Cash wallet';
-                    const secondaryAcc = assetAccounts.find(a => a !== primaryAcc) || primaryAcc;
-                    addSplitRow(primaryAcc, total, null, null);
-                    addSplitRow(secondaryAcc, 0.00, null, null);
+                    addSplitRow('withdrawal', primaryAcc, total, null, null, 'My share', '');
+                    addSplitRow('transfer', '', 0.00, null, null, 'Paid for friend', 'Friend');
                 }
             }
             onSplitChange();
@@ -508,7 +570,7 @@
         if (splitCheckbox && splitCheckbox.checked) {
             const rows = document.querySelectorAll('#split-rows .split-row');
             if (rows.length < 2) {
-                alert("Please add at least 2 split accounts, or uncheck 'Split Payment'.");
+                alert("Please add at least 2 splits, or uncheck 'Split Transaction'.");
                 e.preventDefault();
                 return false;
             }
@@ -519,20 +581,42 @@
 
             for (let i = 0; i < rows.length; i++) {
                 const row = rows[i];
-                const acc = row.querySelector('.split-account-select').value;
+                const type = row.querySelector('.split-type-select').value;
                 const amt = parseFloat(row.querySelector('.split-amount-input').value) || 0;
-                if (!acc) {
-                    alert("Please select an account for each split.");
-                    e.preventDefault();
-                    return false;
+                const desc = (row.querySelector('.split-desc-input').value || '').trim();
+                let acc = '';
+                let dest = '';
+
+                if (type === 'transfer') {
+                    dest = (row.querySelector('.split-friend-input').value || '').trim();
+                    if (!dest) {
+                        alert("Please enter or select a friend / destination account for the transfer split.");
+                        e.preventDefault();
+                        return false;
+                    }
+                    acc = dest;
+                } else {
+                    acc = row.querySelector('.split-account-select').value;
+                    if (!acc) {
+                        alert("Please select an account for each expense split.");
+                        e.preventDefault();
+                        return false;
+                    }
                 }
+
                 if (amt <= 0) {
                     alert("Each split amount must be greater than 0.00.");
                     e.preventDefault();
                     return false;
                 }
                 sum += amt;
-                splits.push({ account: acc, amount: amt });
+                splits.push({
+                    split_type: type,
+                    account: acc,
+                    destination_account: dest || null,
+                    description: desc || (type === 'transfer' ? `Paid for ${dest}` : 'My share'),
+                    amount: amt
+                });
             }
 
             if (Math.abs(total - sum) >= 0.01) {
@@ -547,8 +631,9 @@
 
             document.getElementById('split_payload').value = JSON.stringify(splits);
             const sourceAccSelect = document.getElementById('source_account');
-            if (sourceAccSelect && splits.length > 0) {
-                sourceAccSelect.value = splits[0].account;
+            const mainExp = splits.find(s => s.split_type === 'withdrawal');
+            if (sourceAccSelect && mainExp) {
+                sourceAccSelect.value = mainExp.account;
             }
         } else {
             const splitPayloadInput = document.getElementById('split_payload');

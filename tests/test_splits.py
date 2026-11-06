@@ -202,9 +202,107 @@ def test_split_payload_parsing():
     print("split_payload JSON parsing tests passed!")
 
 
+def test_create_transaction_from_data_friend_split():
+    print("Testing create_transaction_from_data with friend transfer split...")
+    from app.receipt_processing import create_transaction_from_data
+
+    created_txs = []
+    attached_journals = []
+
+    def mock_create_firefly_transaction(receipt, source_account, tags=None, destination_account=None, transaction_type=None):
+        tx_id = f"tx_{len(created_txs) + 1}"
+        journal_id = 200 + len(created_txs)
+        created_txs.append(
+            {
+                "id": tx_id,
+                "journal_id": journal_id,
+                "amount": receipt.amount,
+                "source_account": source_account,
+                "destination_account": destination_account,
+                "transaction_type": transaction_type or getattr(receipt, "transaction_type", "withdrawal"),
+                "tags": tags,
+                "description": receipt.description,
+            }
+        )
+        return {
+            "data": {
+                "id": tx_id,
+                "attributes": {
+                    "transactions": [{"transaction_journal_id": journal_id}]
+                },
+            }
+        }
+
+    def mock_attach_image(journal_id, image_bytes, filename):
+        attached_journals.append((journal_id, filename))
+        return True
+
+    with patch(
+        "app.receipt_processing.create_firefly_transaction",
+        side_effect=mock_create_firefly_transaction,
+    ), patch(
+        "app.receipt_processing.attach_image_to_transaction",
+        side_effect=mock_attach_image,
+    ), patch(
+        "app.firefly.ensure_firefly_asset_account",
+        return_value=True,
+    ):
+        receipt_data = {
+            "date": "2026-11-06",
+            "amount": 50.0,
+            "store_name": "Bistro",
+            "description": "Dinner with Bob",
+            "category": "Dining",
+            "budget": "Monthly",
+            "splits": [
+                {"split_type": "withdrawal", "account": "Easybank Giro", "amount": 30.0, "description": "My dinner"},
+                {"split_type": "transfer", "destination_account": "Bob", "amount": 20.0, "description": "Bob dinner"},
+            ],
+        }
+
+        fake_image = b"test-fake-receipt-image"
+        result = asyncio.run(
+            create_transaction_from_data(
+                receipt_data,
+                source_account="Easybank Giro",
+                image_bytes=fake_image,
+                filename="receipt_Bistro_2026-11-06.jpg",
+            )
+        )
+
+        assert "Split payment created" in result
+        assert "Easybank Giro (30.00)" in result
+        assert "Transfer to Bob (20.00)" in result
+
+        # Verify 2 transactions
+        assert len(created_txs) == 2
+
+        # Transaction 1: Withdrawal for personal expense
+        assert created_txs[0]["transaction_type"] == "withdrawal"
+        assert created_txs[0]["source_account"] == "Easybank Giro"
+        assert created_txs[0]["amount"] == 30.0
+        assert created_txs[0]["description"] == "My dinner"
+
+        # Transaction 2: Transfer to Bob (debt/owed)
+        assert created_txs[1]["transaction_type"] == "transfer"
+        assert created_txs[1]["source_account"] == "Easybank Giro"
+        assert created_txs[1]["destination_account"] == "Bob"
+        assert created_txs[1]["amount"] == 20.0
+        assert created_txs[1]["description"] == "Bob dinner"
+        assert "split-transfer" in created_txs[1]["tags"]
+
+        # Verify attachment to both
+        assert len(attached_journals) == 2
+        assert attached_journals[0][0] == 200
+        assert attached_journals[1][0] == 201
+
+    print("create_transaction_from_data friend transfer split tests passed!")
+
+
 if __name__ == "__main__":
     test_payment_split_model()
     test_enrich_extracted_data_accounts()
     test_create_transaction_from_data_split()
     test_split_payload_parsing()
+    test_create_transaction_from_data_friend_split()
     print("\nAll split payment unit tests passed successfully!")

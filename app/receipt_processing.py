@@ -431,8 +431,8 @@ def build_extraction_prompt(
             "9) card_last_four (the last 4 digits of the payment card if mentioned, e.g. '1234', '**** 1234', '...1234'). If paid in cash or card digits are not mentioned, set to null.\n"
             "10) transaction_type ('withdrawal', 'transfer', or 'deposit'). Default is 'withdrawal'. If this transaction represents an ATM cash withdrawal or a transfer between accounts, specify 'transfer'.\n"
             "11) destination_account (if transaction_type is 'transfer', the receiving asset account name e.g. 'Cash wallet' or 'Savings'; otherwise null).\n"
-            "12) is_split_payment (boolean, true if the transaction was paid with multiple payment methods; otherwise false).\n"
-            "13) splits (if is_split_payment is true, list of split payment objects with 'payment_method', 'amount', and optional 'card_last_four'; otherwise empty list []).\n\n"
+            "12) is_split_payment (boolean, true if the transaction was split across multiple payment methods OR split with friends/others where part is an expense and part is paid for someone else who owes you back; otherwise false).\n"
+            "13) splits (if is_split_payment is true, list of split objects with 'split_type' ('withdrawal' for your expense or 'transfer' for money paid for a friend), 'amount', optional 'destination_account' (friend's name if transfer), optional 'description' ('My share' or 'Friend share'), and optional 'payment_method'; otherwise empty list []).\n\n"
             "--- RECEIPT TEXT START ---\n"
             + receipt_text
             + "\n--- RECEIPT TEXT END ---\n\n"
@@ -443,7 +443,7 @@ def build_extraction_prompt(
             '      "date": "YYYY-MM-DD",\n'
             '      "time": "HH:MM",\n'
             '      "amount": 0.0,\n'
-            '      "store_name": "string",\n'
+            '      "store_name": "string (or Unknown Store)",\n'
             '      "description": "string",\n'
             '      "category": "string | null",\n'
             '      "budget": "string | null",\n'
@@ -482,14 +482,14 @@ def build_extraction_prompt(
         "9) card_last_four (the last 4 digits of the payment card if printed on the receipt, e.g. '1234', '**** 1234', '...1234', 'PAN: *******1234'). If paid in cash or card digits are not printed, set to null.\n"
         "10) transaction_type ('withdrawal', 'transfer', or 'deposit'). Default is 'withdrawal'. If this receipt represents an ATM cash withdrawal or a transfer between accounts, specify 'transfer'.\n"
         "11) destination_account (if transaction_type is 'transfer', the receiving asset account name e.g. 'Cash wallet' or 'Savings'; otherwise null).\n"
-        "12) is_split_payment (boolean, true if the receipt was paid with multiple payment methods, e.g. part in cash and part with card; otherwise false).\n"
-        "13) splits (if is_split_payment is true, list of split payment objects with 'payment_method', 'amount', and optional 'card_last_four'; otherwise empty list []).\n\n"
+        "12) is_split_payment (boolean, true if the receipt was paid with multiple payment methods OR split with friends where part is an expense and part is paid for someone else; otherwise false).\n"
+        "13) splits (if is_split_payment is true, list of split objects with 'split_type' ('withdrawal' or 'transfer'), 'amount', optional 'destination_account' (friend's name if transfer), optional 'description', and optional 'payment_method'; otherwise empty list []).\n\n"
         "Return ONLY a valid JSON object matching this schema:\n"
         "{\n"
         '  "date": "YYYY-MM-DD",\n'
         '  "time": "HH:MM",\n'
         '  "amount": 0.0,\n'
-        '  "store_name": "string",\n'
+        '  "store_name": "string (or Unknown Store)",\n'
         '  "description": "string",\n'
         '  "category": "string | null",\n'
         '  "budget": "string | null",\n'
@@ -499,8 +499,8 @@ def build_extraction_prompt(
         '  "destination_account": "string | null",\n'
         '  "is_split_payment": false,\n'
         '  "splits": [\n'
-        '    {"payment_method": "cash", "amount": 0.0, "card_last_four": null},\n'
-        '    {"payment_method": "card", "amount": 0.0, "card_last_four": "1234"}\n'
+        '    {"split_type": "withdrawal", "amount": 0.0, "description": "My share"},\n'
+        '    {"split_type": "transfer", "amount": 0.0, "destination_account": "Friend", "description": "Friend share"}\n'
         '  ]\n'
         "}"
     )
@@ -632,10 +632,24 @@ async def extract_receipt_data_from_text(
                 except (ValueError, TypeError):
                     sp_amt = 0.0
                 sp_method = (getattr(sp, "payment_method", "") or "").strip().lower()
+                sp_type = (getattr(sp, "split_type", "") or getattr(sp, "type", "") or "withdrawal").strip().lower()
+                if sp_type in ("transfer", "debt", "friend", "owed", "reimbursement"):
+                    sp_type = "transfer"
+                else:
+                    sp_type = "withdrawal"
+                sp_acc = getattr(sp, "account", None)
+                sp_dest = getattr(sp, "destination_account", None) or getattr(sp, "friend_name", None)
+                sp_desc = getattr(sp, "description", None)
+                sp_cat = getattr(sp, "category", None)
                 parsed_splits.append({
+                    "split_type": sp_type,
                     "payment_method": sp_method,
                     "amount": sp_amt,
                     "card_last_four": sp_card or "",
+                    "account": sp_acc,
+                    "destination_account": sp_dest,
+                    "description": sp_desc,
+                    "category": sp_cat,
                 })
             if len(parsed_splits) >= 2:
                 is_split = True
@@ -813,15 +827,30 @@ async def extract_receipt_data(
         is_split = bool(getattr(receipt, "is_split_payment", False))
         raw_splits = getattr(receipt, "splits", None) or []
         for sp in raw_splits:
-            sp_card = clean_card_digits(sp.card_last_four)
+            sp_card = clean_card_digits(getattr(sp, "card_last_four", None))
             try:
-                sp_amt = float(sp.amount)
+                sp_amt = float(getattr(sp, "amount", 0.0))
             except (ValueError, TypeError):
                 sp_amt = 0.0
+            sp_method = (getattr(sp, "payment_method", "") or "").strip().lower()
+            sp_type = (getattr(sp, "split_type", "") or getattr(sp, "type", "") or "withdrawal").strip().lower()
+            if sp_type in ("transfer", "debt", "friend", "owed", "reimbursement"):
+                sp_type = "transfer"
+            else:
+                sp_type = "withdrawal"
+            sp_acc = getattr(sp, "account", None)
+            sp_dest = getattr(sp, "destination_account", None) or getattr(sp, "friend_name", None)
+            sp_desc = getattr(sp, "description", None)
+            sp_cat = getattr(sp, "category", None)
             parsed_splits.append({
-                "payment_method": (sp.payment_method or "").strip().lower(),
+                "split_type": sp_type,
+                "payment_method": sp_method,
                 "amount": sp_amt,
                 "card_last_four": sp_card or "",
+                "account": sp_acc,
+                "destination_account": sp_dest,
+                "description": sp_desc,
+                "category": sp_cat,
             })
         if len(parsed_splits) >= 2:
             is_split = True
@@ -900,15 +929,24 @@ async def create_transaction_from_data(
         destination_account=dest_account or None,
     )
 
-    # Check if this is a split payment across multiple accounts
+    # Check if this is a split payment across multiple accounts / friend transfer
     splits = receipt_data.get("splits")
     if splits and isinstance(splits, list) and len(splits) >= 2:
-        print(f"Creating split transactions for {len(splits)} accounts...")
+        print(f"Creating split transactions for {len(splits)} splits...")
         created_summaries = []
         errors = []
 
         for idx, split in enumerate(splits):
-            split_acc = split.get("account") or source_account
+            sp_type = (
+                split.get("split_type")
+                or split.get("type")
+                or "withdrawal"
+            ).strip().lower()
+            if sp_type in ("transfer", "debt", "friend", "owed", "reimbursement"):
+                sp_type = "transfer"
+            else:
+                sp_type = "withdrawal"
+
             try:
                 split_amt = float(split.get("amount", 0.0))
             except (ValueError, TypeError):
@@ -916,38 +954,92 @@ async def create_transaction_from_data(
             if split_amt <= 0:
                 continue
 
-            split_desc = f"{receipt.description} (Split {idx + 1}/{len(splits)})"
-            split_receipt = ReceiptModel(
-                date=receipt.date,
-                time=receipt.time,
-                amount=split_amt,
-                store_name=receipt.store_name,
-                description=split_desc,
-                category=clean_category,
-                budget=clean_budget,
-            )
+            sp_cat = split.get("category") if split.get("category") is not None else clean_category
 
-            try:
-                tx_res = create_firefly_transaction(
-                    split_receipt, split_acc, tags=["automated", "split-payment"]
+            if sp_type == "transfer":
+                dest_friend = (
+                    split.get("destination_account")
+                    or split.get("account")
+                    or split.get("friend_name")
+                    or "Friends"
+                ).strip()
+                sp_src = (split.get("source_account") or source_account).strip()
+                sp_desc = (split.get("description") or "").strip()
+                if not sp_desc:
+                    sp_desc = f"{receipt.description} (Paid for {dest_friend})"
+
+                split_receipt = ReceiptModel(
+                    date=receipt.date,
+                    time=receipt.time,
+                    amount=split_amt,
+                    store_name=dest_friend,
+                    description=sp_desc,
+                    category=sp_cat,
+                    budget=None,
+                    transaction_type="transfer",
+                    destination_account=dest_friend,
                 )
-                if tx_res and "data" in tx_res:
-                    tx_id = tx_res["data"]["id"]
-                    created_summaries.append(f"{split_acc} ({split_amt:.2f})")
-                    if image_bytes:
-                        try:
-                            journal_id = int(
-                                tx_res["data"]["attributes"]["transactions"][0][
-                                    "transaction_journal_id"
-                                ]
-                            )
-                            attach_image_to_transaction(journal_id, image_bytes, filename)
-                        except Exception as e:
-                            print(f"Warning: Failed to attach image to split journal: {e}")
-                else:
-                    errors.append(f"Failed to create split for {split_acc}")
-            except Exception as e:
-                errors.append(f"Error on {split_acc}: {e}")
+                try:
+                    tx_res = create_firefly_transaction(
+                        split_receipt,
+                        sp_src,
+                        tags=["automated", "split-transfer", "owed-to-me"],
+                        destination_account=dest_friend,
+                        transaction_type="transfer",
+                    )
+                    if tx_res and "data" in tx_res:
+                        created_summaries.append(f"Transfer to {dest_friend} ({split_amt:.2f})")
+                        if image_bytes:
+                            try:
+                                journal_id = int(
+                                    tx_res["data"]["attributes"]["transactions"][0][
+                                        "transaction_journal_id"
+                                    ]
+                                )
+                                attach_image_to_transaction(journal_id, image_bytes, filename)
+                            except Exception as e:
+                                print(f"Warning: Failed to attach image to transfer journal: {e}")
+                    else:
+                        errors.append(f"Failed to create transfer for {dest_friend}")
+                except Exception as e:
+                    errors.append(f"Error on transfer to {dest_friend}: {e}")
+            else:
+                # Withdrawal (Expense)
+                split_acc = split.get("source_account") or split.get("account") or source_account
+                sp_desc = (split.get("description") or "").strip()
+                if not sp_desc:
+                    sp_desc = f"{receipt.description} (Split {idx + 1}/{len(splits)})"
+
+                split_receipt = ReceiptModel(
+                    date=receipt.date,
+                    time=receipt.time,
+                    amount=split_amt,
+                    store_name=receipt.store_name,
+                    description=sp_desc,
+                    category=sp_cat,
+                    budget=clean_budget,
+                    transaction_type="withdrawal",
+                )
+                try:
+                    tx_res = create_firefly_transaction(
+                        split_receipt, split_acc, tags=["automated", "split-payment"]
+                    )
+                    if tx_res and "data" in tx_res:
+                        created_summaries.append(f"{split_acc} ({split_amt:.2f})")
+                        if image_bytes:
+                            try:
+                                journal_id = int(
+                                    tx_res["data"]["attributes"]["transactions"][0][
+                                        "transaction_journal_id"
+                                    ]
+                                )
+                                attach_image_to_transaction(journal_id, image_bytes, filename)
+                            except Exception as e:
+                                print(f"Warning: Failed to attach image to split journal: {e}")
+                    else:
+                        errors.append(f"Failed to create split for {split_acc}")
+                except Exception as e:
+                    errors.append(f"Error on {split_acc}: {e}")
 
         if created_summaries:
             msg = f"Split payment created: {', '.join(created_summaries)}"
