@@ -97,14 +97,14 @@ def perform_tesseract_ocr(
             # Try requested language first
             cmd = [tess_bin, tmp_path, "stdout", "-l", language]
             res = subprocess.run(
-                cmd, capture_output=True, text=True, timeout=20
+                cmd, capture_output=True, text=True, timeout=60
             )
 
             # If failed because language pack is missing, retry with 'eng'
             if res.returncode != 0 and "deu" in language:
                 cmd = [tess_bin, tmp_path, "stdout", "-l", "eng"]
                 res = subprocess.run(
-                    cmd, capture_output=True, text=True, timeout=20
+                    cmd, capture_output=True, text=True, timeout=60
                 )
 
             if res.returncode == 0:

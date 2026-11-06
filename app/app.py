@@ -486,12 +486,12 @@ async def extract_receipt(
                 "submission_id": submission_id,
             },
         )
-    except TimeoutError:
+    except TimeoutError as e:
         return templates.TemplateResponse(
             "error.html",
             {
                 "request": request,
-                "error_message": "The operation timed out. The image processing is taking too long. Please try again with a smaller or clearer image.",
+                "error_message": f"Operation timed out: {str(e)}",
             },
         )
     except Exception as e:

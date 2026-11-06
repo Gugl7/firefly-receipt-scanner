@@ -37,6 +37,7 @@ def test_ocr_settings():
     assert s1.ocr_enabled is False
     assert s1.ocr_engine == "tesseract"
     assert s1.ocr_language == "eng+deu"
+    assert s1.llm_timeout == 180.0
 
     # 2. Configured via environment / constructor aliases
     s2 = Settings(
@@ -44,9 +45,11 @@ def test_ocr_settings():
         firefly_iii_token="tok",
         OCR_ENABLED=True,
         OCR_LANGUAGE="deu",
+        LLM_TIMEOUT=300,
     )
     assert s2.ocr_enabled is True
     assert s2.ocr_language == "deu"
+    assert s2.llm_timeout == 300.0
 
     s3 = Settings(
         firefly_iii_url="http://firefly.test",

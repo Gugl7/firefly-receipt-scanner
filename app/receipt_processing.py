@@ -329,10 +329,11 @@ async def _extract_with_router(
     }
 
     url = settings.router_chat_url
+    timeout_secs = float(getattr(settings, "llm_timeout", 300.0))
     print(
-        f"Sending request to 9router at {url} (model: {settings.effective_router_model})..."
+        f"Sending request to 9router at {url} (model: {settings.effective_router_model}, timeout: {timeout_secs:.0f}s)..."
     )
-    async with httpx.AsyncClient(timeout=60.0) as client:
+    async with httpx.AsyncClient(timeout=timeout_secs) as client:
         try:
             response = await client.post(url, headers=headers, json=payload)
             response.raise_for_status()
@@ -376,7 +377,8 @@ async def _extract_with_router(
                 raise
         except httpx.TimeoutException as e:
             raise TimeoutError(
-                "The 9router request timed out. Please try again with a smaller or clearer image."
+                f"The model request timed out after {timeout_secs:.0f} seconds. "
+                "If your model is running on CPU or loading into memory, you can increase LLM_TIMEOUT in your .env (e.g. LLM_TIMEOUT=600)."
             ) from e
 
     print("Received response from 9router")
