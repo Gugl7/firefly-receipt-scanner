@@ -73,6 +73,14 @@ class Settings(BaseSettings):
             ),
         )
 
+        # LLM Request Timeout (seconds) - default 180s for local models & CPU inference
+        llm_timeout: float = Field(
+            default=180.0,
+            validation_alias=AliasChoices(
+                "LLM_TIMEOUT", "ROUTER_TIMEOUT", "TIMEOUT_SECONDS", "REQUEST_TIMEOUT"
+            ),
+        )
+
         model_config = {"env_file": ".env", "extra": "ignore"}
     else:
         llm_provider: str = "auto"
@@ -83,6 +91,7 @@ class Settings(BaseSettings):
         ocr_enabled: bool = False
         ocr_engine: str = "tesseract"
         ocr_language: str = "eng+deu"
+        llm_timeout: float = 180.0
 
         class Config:
             env_file = ".env"
@@ -116,6 +125,10 @@ class Settings(BaseSettings):
                 "OCR_LANGUAGE": "ocr_language",
                 "TESSERACT_LANG": "ocr_language",
                 "TESSERACT_LANGUAGES": "ocr_language",
+                "LLM_TIMEOUT": "llm_timeout",
+                "ROUTER_TIMEOUT": "llm_timeout",
+                "TIMEOUT_SECONDS": "llm_timeout",
+                "REQUEST_TIMEOUT": "llm_timeout",
             }
             for k, v in list(values.items()):
                 if k in aliases and aliases[k] not in values:
